@@ -93,6 +93,16 @@ void debug(const char *format_string, ...) {
     va_end(args);
 }
 
+void test(bool t, const char *format_string, ...) {
+    if(t == true)
+        return;
+
+    va_list args;
+    va_start(args, format_string);
+    log(MESSAGE_FATAL_ERROR, format_string, args);
+    va_end(args);
+}
+
 __attribute__ ((const))
 bool rectIntersect(int a_x, int a_y, int a_width, int a_height,
                    int b_x, int b_y, int b_width, int b_height) {
