@@ -15,7 +15,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <queue>
+#include <deque>
 #include <algorithm>
 #include <iostream>
 #include <fstream>
@@ -418,6 +418,7 @@ struct HexMap {
     void move_or_attack(Hex *attacker, Hex *defender);
     void free_units(void);
     Hex *get_active_hex(void);
+    vector<Hex *> BFS(Hex *, int range);
 
     void store_current_state(void);
     void clear_old_states(void);
@@ -501,13 +502,15 @@ struct SideInfo : Widget {
     }
 };
 
-// currently just the inscribed circle of the hexagon with side a
+static bool marked_hexes(void);
+
 struct Hex : Widget {
     int m_index;
     int m_level;
     float m_a;
     float m_r;
     bool m_active;
+    bool m_marked;
     float m_cx;
     float m_cy;
 
@@ -541,6 +544,7 @@ struct Hex : Widget {
         m_circle_bb_radius = r;
 
         m_active = false;
+        m_marked = false;
         m_type = WidgetType::Hex;
 
         m_level = level;
@@ -557,13 +561,18 @@ struct Hex : Widget {
     }
 
     void update(void) override {
-        if(m_level < 1)
-            return;
-    };
+        if(m_level == 0) {
+            if(m_a > 5) {
+                m_a -= 0.1 * m_circle_bb_radius;
+            }
+            else {
+                m_level = -1;
+            }
+        }
+    }
 
     void draw(void) override {
-        if(m_level < 1)
-            return;
+        if(m_level == -1) return;
 
         float r = 0.5;
         float g = 0.5;
@@ -594,60 +603,66 @@ struct Hex : Widget {
             }
         }
 
+        ALLEGRO_COLOR txt_color = color_white;
+
+        if(m_marked == true) {
+            const float space = 2;
+            draw_hex(vx(m_cx), vy(m_cy),
+                     scale * (m_a - space), 0, 1, 1, 1,
+                     0.5 * sqrt(3) * (m_a - space) * scale,
+                     sin(1.0 / 2.0) * (m_a - space) * scale);
+        }
+        else if(m_active == false and marked_hexes() == true) {
+            r /= 3;
+            g /= 3;
+            b /= 3;
+            txt_color = color_grey_middle;
+        }
+
         const float space = 4;
 
         draw_hex(vx(m_cx), vy(m_cy), scale * (m_a - space), 0, r, g, b,
                  0.5 * sqrt(3) * (m_a - space) * scale,
                  sin(1.0 / 2.0) * (m_a - space) * scale);
 
-        // al_draw_filled_circle(vx(m_cx),
-        //                       vy(m_cy),
-        //                       m_r * scale,
-        //                       c);
+        if(m_level == 0) return;
 
         al_draw_textf(g_font,
-                      color_white,
+                      txt_color,
                       vx(m_cx) - 5,
                       vy(m_cy) - 7,
                       0,
                       "%d", m_level);
 
         if(m_contains_harvester == true)
-            al_draw_text(g_font, color_white,
+            al_draw_text(g_font, txt_color,
                          vx(m_cx) - 25, vy(m_cy) - 25,
                          0, "H");
 
         if(m_contains_armory == true)
-            al_draw_text(g_font, color_white,
+            al_draw_text(g_font, txt_color,
                          vx(m_cx) - 5, vy(m_cy) - 25,
                          0, "A");
 
         if(m_contains_cannon == true)
-            al_draw_text(g_font, color_white,
+            al_draw_text(g_font, txt_color,
                          vx(m_cx) + 15, vy(m_cy) - 25,
                          0, "C");
 
         if(m_ammo > 0 or m_loaded_ammo > 0)
-            al_draw_textf(g_font, color_white,
+            al_draw_textf(g_font, txt_color,
                          vx(m_cx) + 15, vy(m_cy) - 7,
                           0, "%d", m_ammo + m_loaded_ammo);
 
         if(m_units_free > 0 or m_units_moved > 0)
-            al_draw_textf(g_font, color_white,
+            al_draw_textf(g_font, txt_color,
                           vx(m_cx) - 12, vy(m_cy) + 10,
                           0, "%d/%d", m_units_free, m_units_moved);
-
-        // draw_bb();
     }
 
     void mouseDownEvent(void) override {
         if(m_level < 1)
             return;
-
-
-        // for(auto&& neighbor : map->neighbors(this)) {
-        //     neighbor->m_active = true;
-        // }
     }
 
     bool alive(void) {
@@ -718,8 +733,9 @@ public:
     bool m_game_won;
     bool m_game_lost;
     const int m_ai_play_delay = 15;
-    vector<Hex *> m_marked;
     bool m_draw_buttons;
+    bool m_marked_hexes;
+    float m_turn_anim;
 
     MapUI() {
         m_current_action = MapAction::MovingUnits;
@@ -729,6 +745,8 @@ public:
         m_game_won = false;
         m_game_lost = false;
         m_draw_buttons = true;
+        m_marked_hexes = false;
+        m_turn_anim = 0;
     }
     ~MapUI() {
         for(auto&& w : widgets) delete w;
@@ -765,12 +783,18 @@ public:
     void mark(vector<Hex *> hs) {
         for(auto&& h : hs)
             if(h->alive())
-                m_marked.push_back(h);
+                h->m_marked = true;
+        m_marked_hexes = true;
     }
     void clear_mark(void) {
-        m_marked.clear();
+        for(auto&& h : map->m_hexes) h->m_marked = false;
+        m_marked_hexes = false;
     }
 };
+
+static bool marked_hexes(void) {
+    return Map_UI->m_marked_hexes;
+}
 
 void MapUI::ai_play(vector<AIAction> acts) {
     debug("MapUI::ai_play() %d", acts.size());
@@ -819,14 +843,19 @@ struct MainMenuUI : UI {
 
 struct GameSetupUI : UI {
     Button *m_selected_map;
+    Button *m_selected_player;
 
+    vector<Button *> m_player_select_btns;
+    vector<Button *> m_map_select_btns;
+    
     GameSetupUI();
     ~GameSetupUI() { for(auto&& w: widgets) delete w; }
 };
 
 static void new_game(void);
 static void btn_begin_cb(void);
-static void btn_map_select(void);
+static void btn_map_select_cb(void);
+static void btn_player_select_cb(void);
 
 GameSetupUI::GameSetupUI() {
     Button *btn_begin = new Button("Begin");
@@ -848,7 +877,7 @@ GameSetupUI::GameSetupUI() {
             int xsize = 10 + al_get_text_width(g_font, map_name);
             btn_map->setpos(150,  y,
                             150 + xsize, y + 30);
-            btn_map->onMouseDown = btn_map_select;
+            btn_map->onMouseDown = btn_map_select_cb;
             btn_map->set_offsets();
             btn_map->m_type = WidgetType::MapSelectButton;
             map_btns.push_back(btn_map);
@@ -869,39 +898,52 @@ GameSetupUI::GameSetupUI() {
     int xsize = 10 + al_get_text_width(g_font, "vs. A.I.");
     btn_blue_player_ai->setpos(display_x - 200 - xsize,  y,
                                display_x - 200, y + 30);
-    btn_blue_player_ai->onMouseDown = NULL;
+    btn_blue_player_ai->onMouseDown = btn_player_select_cb;
     btn_blue_player_ai->set_offsets();
-    btn_blue_player_ai->m_pressed = true;
-    btn_blue_player_ai->m_color = color_blue_muted;
     addWidget(btn_blue_player_ai);
 
     Button *btn_blue_player_human = new Button("vs. Human");
     xsize = 10 + al_get_text_width(g_font, "vs. Human");
     btn_blue_player_human->setpos(display_x - 200 - xsize, y + 35,
                                   display_x - 200, y + 65);
-    btn_blue_player_human->onMouseDown = NULL;
+    btn_blue_player_human->onMouseDown = btn_player_select_cb;
     btn_blue_player_human->set_offsets();
     btn_blue_player_human->m_color = color_blue;
     addWidget(btn_blue_player_human);
+
+    btn_blue_player_ai->m_pressed = true;
+    btn_blue_player_ai->m_color = color_blue_muted;
+    m_selected_player = btn_blue_player_ai;
+
+    m_player_select_btns = { btn_blue_player_ai, btn_blue_player_human };
 }
 
-static void btn_map_select(void) {
-    for(auto&& w : GameSetup_UI->widgets) {
-        if(w->m_type == WidgetType::MapSelectButton) {
-            Button *b = static_cast<Button *>(w);
-            if(b->m_pressed == true) {
-                GameSetup_UI->m_selected_map = b;
-                b->m_color = color_red_muted;
-            }
+static void btn_map_select_cb(void) {
+    for(auto&& b : GameSetup_UI->m_map_select_btns) {
+        if(b->m_pressed == true) {
+            GameSetup_UI->m_selected_map = b;
+            b->m_color = color_red_muted;
         }
     }
-    for(auto&& w : GameSetup_UI->widgets) {
-        if(w->m_type == WidgetType::MapSelectButton) {
-            Button *b = static_cast<Button *>(w);
-            b->m_pressed = false;
-            if(b != GameSetup_UI->m_selected_map) {
-                b->m_color = color_red;
-            }
+    for(auto&& b : GameSetup_UI->m_map_select_btns) {
+        b->m_pressed = false;
+        if(b != GameSetup_UI->m_selected_map) {
+            b->m_color = color_red;
+        }
+    }
+}
+
+static void btn_player_select_cb(void) {
+    for(auto&& b : GameSetup_UI->m_player_select_btns) {
+        if(b->m_pressed == true) {
+            GameSetup_UI->m_selected_player = b;
+            b->m_color = color_blue_muted;
+        }
+    }
+    for(auto&& b : GameSetup_UI->m_player_select_btns) {
+        b->m_pressed = false;
+        if(b != GameSetup_UI->m_selected_player) {
+            b->m_color = color_blue;
         }
     }
 }
@@ -1152,6 +1194,52 @@ void UI::draw(void) {
     }
 }
 
+vector<Hex *> HexMap::BFS(Hex *base, int range) {
+    struct bfsdata {
+        float distance;
+
+        bfsdata() { distance = -1; }
+    };
+    
+    vector<bfsdata> hexdata(m_hexes.size());
+    
+    deque<Hex *> q;
+    q.push_back(base);
+
+    hexdata[base->m_index].distance = 0;
+
+    while(not q.empty()) {
+        Hex *cur = q.back();
+        q.pop_back();
+        for(auto&& neighbor : neighbors(cur)) {
+            
+            bool not_visited = hexdata[neighbor->m_index].distance == -1;
+            bool ok_side_or_base_neighbor =
+                neighbor->m_side == base->m_side || cur == base;
+            
+            if(neighbor->alive() && not_visited && ok_side_or_base_neighbor) {
+
+                hexdata[neighbor->m_index].distance =
+                    hexdata[cur->m_index].distance + 1;
+
+                if(neighbor->m_side == base->m_side &&
+                   hexdata[neighbor->m_index].distance <= range)
+                    q.push_back(neighbor);
+            }
+        }
+    }
+
+    vector<Hex *> ret;
+    for(auto&& h : m_hexes) {
+        if(hexdata[h->m_index].distance != -1
+           && hexdata[h->m_index].distance <= range)
+            {
+                ret.push_back(h);
+            }
+    }
+    return ret;
+}
+
 void HexMap::undo(void) {
     if(m_old_states.empty() == true)
         return;
@@ -1192,8 +1280,8 @@ void HexMap::store_current_state(void) {
 
 void HexMap::clear_old_states(void) {
     m_old_states.clear();
-}
 
+}
 Hex *HexMap::get_active_hex(void) {
     for(auto&& h : m_hexes) {
         if(h->m_active == true) {
@@ -1334,7 +1422,8 @@ void MapUI::MapHexSelected(Hex *h) {
         return;
     }
     if(h->m_side != Side::Neutral and
-       h->m_side == game->m_current_controller->m_side) {
+       h->m_side == game->m_current_controller->m_side and
+       prev == NULL) {
         h->m_active = true;
 
         if(get_current_action() == MapAction::MovingUnits) {
@@ -1344,30 +1433,28 @@ void MapUI::MapHexSelected(Hex *h) {
 
     if(get_current_action() == MapAction::MovingUnits) {
         if(prev == NULL) {
-            mark(map->neighbors(h));
+            mark(map->BFS(h, 4));
         }
 
-        if(prev != NULL && h != prev && prev->m_units_free > 0 && h->alive()) {
-            bool move_ok = false;
-
-            if(prev->m_side != h->m_side) {
-                if(is_neighbor(prev, h) == true) {
-                    move_ok = true;
+        else if (prev != NULL) {
+            if(h != prev && prev->m_units_free > 0 && h->alive()) {
+                vector<Hex *> bfs = map->BFS(prev, 4);
+                bool free_move = find(bfs.begin(), bfs.end(), h) != bfs.end();
+            
+                if(free_move == true) {
+                    map->store_current_state();
+                    map->move_or_attack(prev, h);
+                    clear_active_hex();
                 }
-            } else {
-                move_ok = true;
-            }
-
-            if(move_ok == true) {
-                map->store_current_state();
-                map->move_or_attack(prev, h);
-                clear_active_hex();
-            }
-            else if(game->controller()->m_carriers >= 1) {
-                map->store_current_state();
-                map->move_or_attack(prev, h);
-                clear_active_hex();
-                game->controller()->m_carriers -= 1;
+                else if(game->controller()->m_carriers >= 1) {
+                    map->store_current_state();
+                    map->move_or_attack(prev, h);
+                    clear_active_hex();
+                    game->controller()->m_carriers -= 1;
+                }
+                else {
+                    clear_active_hex();
+                }
             }
         }
     }
@@ -1487,20 +1574,9 @@ void MapUI::MapHexSelected(Hex *h) {
 }
 
 void MapUI::draw(void) {
-    // draw marked hexes underneath
-    for(auto&& marked : m_marked) {
-        const float space = 2;
-        draw_hex(vx(marked->m_cx), vy(marked->m_cy),
-                 scale * (marked->m_a - space), 0, 1, 1, 1,
-                 0.5 * sqrt(3) * (marked->m_a - space) * scale,
-                 sin(1.0 / 2.0) * (marked->m_a - space) * scale);
-
-    }
     // draw normal hexes
-    for(auto&& w : widgets) {
-        if(w->m_type == WidgetType::Hex) {
-            w->draw();
-        }
+    for(auto&& h : map->m_hexes) {
+        h->draw();
     }
 
     if(m_game_won or m_game_lost) {
@@ -1536,6 +1612,8 @@ void MapUI::draw(void) {
 static void end_turn_cb(void);
 
 void MapUI::update(void) {
+    UI::update();
+
     if(m_ai_replay == true) {
         if(al_key_down(&keyboard_state, ALLEGRO_KEY_S)) {
             while(ai_replay()) {};
@@ -1704,6 +1782,8 @@ static void is_won(void) {
 }
 
 static void end_turn_cb(void) {
+    Map_UI->m_turn_anim = 1.0;
+    
     is_won();
 
     SideController *s = game->get_next_controller();
@@ -2024,10 +2104,14 @@ static void init(void) {
     Map_UI = NULL;
 }
 
-static void new_game(void) {
+static void new_game() {
     game = new Game;
     game->players[0]->m_ai_control = false;
-    game->players[1]->m_ai_control = true;
+
+    if(strcmp(GameSetup_UI->m_selected_player->m_name, "vs. Human") == 0) {
+        game->players[1]->m_ai_control = false;
+    }
+
     map = new HexMap;
     Map_UI = new MapUI;
     Map_UI->clear_to = color_black;
