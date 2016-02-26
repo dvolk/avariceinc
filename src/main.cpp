@@ -26,15 +26,17 @@
 
 using namespace std;
 
-struct UI;
-struct MapUI;
 struct HexMap;
 struct Game;
 struct SideFlag;
-struct Button;
+struct SideButton;
 struct MessageLog;
-struct MainMenuUI;
 struct SideInfo;
+
+struct UI;
+struct MainMenuUI;
+struct GameSetupUI;
+struct MapUI;
 
 ALLEGRO_DISPLAY *display;
 ALLEGRO_KEYBOARD_STATE keyboard_state;
@@ -53,13 +55,14 @@ int key;
 HexMap *map;
 UI *ui;
 MainMenuUI *MainMenu_UI;
+GameSetupUI *GameSetup_UI;
 MapUI *Map_UI;
 float view_x = -65;
 float view_y = 0;
 float scale = 1;
 double dt;
 Game *game;
-vector<Button *> opt_buttons;
+vector<SideButton *> opt_buttons;
 MessageLog *msg;
 SideInfo *sideinfo1;
 SideInfo *sideinfo2;
@@ -76,7 +79,9 @@ inline float vy(float y) {
 enum class WidgetType {
     Hex,
     Button,
+    SideButton,
     MenuEntry,
+    MapSelectButton,
     Other,
 };
 
@@ -253,18 +258,54 @@ struct UI {
     void addWidgets(vector<Widget *> ws);
 };
 
+struct SideButton;
 static Side get_current_side(void);
-
-static bool is_opt_button(Button *b);
+static bool is_opt_button(SideButton *b);
 static void clear_opt_buttons(void);
 
 struct Button : Widget {
+    const char *m_name;
+    float m_x_off;
+    float m_y_off;
+    bool m_active;
+    bool m_pressed;
+    ALLEGRO_COLOR m_color = color_red;
+
+    explicit Button(const char *_name) {
+        m_name = _name;
+        m_type = WidgetType::Button;
+        m_x_off = 0;
+        m_y_off = 0;
+        m_active = false;
+        m_pressed = false;
+    }
+
+    void draw(void) override {
+        al_draw_filled_rectangle(m_x1, m_y1, m_x2, m_y2, m_color);
+        if(m_name != NULL) {
+            al_draw_text(g_font, color_white, m_x1 + m_x_off,
+                         m_y1 + m_y_off, 0, m_name);
+        }
+        //draw_bb();
+    }
+
+    void mouseDownEvent(void) override {
+        m_pressed = true;
+    }
+
+    void set_offsets(void) {
+        m_x_off = round((m_x2 - m_x1 - al_get_text_width(g_font, m_name)) / 2);
+        m_y_off = round((m_y2 - m_y1 - 14) / 2);
+    }
+};
+
+struct SideButton : Widget {
     const char *m_name;
     bool m_pressed;
     float m_x_off;
     float m_y_off;
 
-    explicit Button(const char *_name) {
+    explicit SideButton(const char *_name) {
         m_name = _name;
         m_type = WidgetType::Button;
         m_pressed = false;
@@ -273,9 +314,9 @@ struct Button : Widget {
     }
 
     void draw(void) override {
-        ALLEGRO_COLOR c = m_pressed ? color_red_muted : color_very_red;
+        ALLEGRO_COLOR c = m_pressed ? color_red_muted : color_red;
         if(get_current_side() == Side::Blue) {
-            c = m_pressed ? color_blue_muted : color_very_blue;
+            c = m_pressed ? color_blue_muted : color_blue;
         }
 
         al_draw_filled_rectangle(m_x1, m_y1, m_x2, m_y2, c);
@@ -299,6 +340,56 @@ struct Button : Widget {
 
 struct Hex;
 
+struct AIAction {
+    AIAction(MapAction act, Hex *src, Hex *dst, int amount) {
+        m_act = act;
+        m_src = src;
+        m_dst = dst;
+        m_amount = amount;
+    }
+
+    MapAction m_act;
+    Hex *m_src;
+    Hex *m_dst;
+    int m_amount;
+};
+
+struct SideController {
+    Side m_side;
+    const char *m_name;
+    int m_resources;
+    int m_carriers;
+    ALLEGRO_COLOR m_color;
+    bool m_ai_control;
+
+    SideController() { }
+
+    explicit SideController(Side s) {
+        m_resources = 12;
+        m_carriers = 0;
+        m_side = s;
+        m_ai_control = true;
+
+        if(s == Side::Red) {
+            m_name = "Red";
+            m_color = color_red;
+        }
+        else if(s == Side::Blue) {
+            m_name = "Blue";
+            m_color = color_blue;
+        }
+        else {
+            fatal_error("SideController(): invalid side %d", (int)s);
+        }
+    }
+
+    bool is_AI(void) {
+        return m_ai_control;
+    }
+
+    vector<AIAction> do_AI(void);
+};
+
 struct HexMap {
     int m_moving_units = 1;
     int m_buying_units = 1;
@@ -307,7 +398,13 @@ struct HexMap {
     const float m_cannon_max_range = 3;
 
     vector<Hex *> m_hexes;
-    vector<vector<Hex *>> m_old_states;
+
+    struct StoredState {
+        SideController m_sc;
+        vector<Hex> m_hexes;
+    };
+
+    vector<StoredState> m_old_states;
     vector<vector<Hex *>> m_neighbors;
 
     HexMap() { }
@@ -328,40 +425,6 @@ struct HexMap {
 };
 
 static void clear_active_hex(void);
-
-struct SideController {
-    Side m_side;
-    const char *m_name;
-    int m_resources;
-    int m_carriers;
-    ALLEGRO_COLOR m_color;
-    bool m_ai_control;
-
-    explicit SideController(Side s) {
-        m_resources = 12;
-        m_carriers = 0;
-        m_side = s;
-        m_ai_control = true;
-
-        if(s == Side::Red) {
-            m_name = "Red";
-            m_color = color_very_red;
-        }
-        else if(s == Side::Blue) {
-            m_name = "Blue";
-            m_color = color_very_blue;
-        }
-        else {
-            fatal_error("SideController(): invalid side %d", (int)s);
-        }
-    }
-
-    bool is_AI(void) {
-        return m_ai_control;
-    }
-
-    void do_AI(void);
-};
 
 struct Game {
     vector<SideController *> players;
@@ -613,43 +676,73 @@ struct Hex : Widget {
 
 HexMap::~HexMap()
 {
-    //for(auto&& h : m_hexes) delete h; // deleted by ~MapUI
-    for(auto&& hh : m_old_states)
-        for(auto&& h : hh) delete h;
 }
 
-void SideController::do_AI(void) {
+vector<AIAction> SideController::do_AI(void) {
+    // save the state before, do the ai while saving individual actions, undo the map, then replay it slowly
+    map->store_current_state();
+    vector<AIAction> ret;
+
     vector<Hex *> mine;
     for(auto&& h : map->m_hexes) {
-        if(h->m_side == m_side) {
+        if(h->alive() && h->m_side == m_side) {
             mine.push_back(h);
         }
     }
 
     for(auto&& h : mine) {
         for(auto&& neighbor : map->neighbors(h)) {
-            if(h->m_units_free >= 1 and neighbor->m_side != h->m_side) {
+            if(neighbor->alive() and h->m_units_free >= 1 and neighbor->m_side != h->m_side) {
                 map->m_moving_units = 1;
                 map->move_or_attack(h, neighbor);
+                ret.push_back(AIAction(MapAction::MovingUnits, h, neighbor, 1));
             }
         }
     }
 
-    return;
+    map->undo();
+    debug("number of ai actions: %d", ret.size());
+    return ret;
 }
+
+static void goto_mainmenu(void);
 
 struct MapUI : UI {
 private:
     MapAction m_current_action;
 public:
+    vector<AIAction> m_ai_acts;
+    bool m_ai_replay;
+    int m_ai_acts_stage;
+    int m_ai_play_time;
+    bool m_game_won;
+    bool m_game_lost;
+    const int m_ai_play_delay = 15;
+    vector<Hex *> m_marked;
+    bool m_draw_buttons;
+
     MapUI() {
         m_current_action = MapAction::MovingUnits;
+        m_ai_replay = false;
+        m_ai_acts_stage = 0;
+        m_ai_play_time = 0;
+        m_game_won = false;
+        m_game_lost = false;
+        m_draw_buttons = true;
     }
     ~MapUI() {
         for(auto&& w : widgets) delete w;
     }
 
     void mouseDownEvent(void) override;
+    void keyDownEvent(void) override {
+        if(m_game_won or m_game_lost) {
+            goto_mainmenu();
+        } else {
+            if(key == ALLEGRO_KEY_H) m_draw_buttons = !m_draw_buttons;
+            UI::keyDownEvent();
+        }
+    }
 
     void draw(void) override;
     void update(void) override;
@@ -665,7 +758,48 @@ public:
     }
 
     void MapHexSelected(Hex *h);
+
+    void ai_play(vector<AIAction> acts);
+    bool ai_replay(void);
+
+    void mark(vector<Hex *> hs) {
+        for(auto&& h : hs)
+            if(h->alive())
+                m_marked.push_back(h);
+    }
+    void clear_mark(void) {
+        m_marked.clear();
+    }
 };
+
+void MapUI::ai_play(vector<AIAction> acts) {
+    debug("MapUI::ai_play() %d", acts.size());
+    m_ai_acts = acts;
+    m_ai_acts_stage = 0;
+    m_ai_replay = true;
+    msg->add("AI turn. Hold 's' to skip ahead.");
+}
+
+bool MapUI::ai_replay(void) {
+    debug("MapUI::ai_replay()");
+    if(m_ai_acts.empty() == true or m_ai_acts_stage >= (int)m_ai_acts.size()) {
+        debug("MapUI::ai_replay() exit, stage: %d", m_ai_acts_stage);
+        return false;
+    }
+
+    AIAction a = m_ai_acts[m_ai_acts_stage];
+
+    if(a.m_act == MapAction::MovingUnits) {
+        map->m_moving_units = a.m_amount;
+        map->move_or_attack(a.m_src, a.m_dst);
+    }
+    else {
+        fatal_error("not implemented yet");
+    }
+
+    m_ai_acts_stage++;
+    return true;
+}
 
 struct MainMenuUI : UI {
     float m_rot;
@@ -682,6 +816,100 @@ struct MainMenuUI : UI {
 
     void handlePress(const char *name);
 };
+
+struct GameSetupUI : UI {
+    Button *m_selected_map;
+
+    GameSetupUI();
+    ~GameSetupUI() { for(auto&& w: widgets) delete w; }
+};
+
+static void new_game(void);
+static void btn_begin_cb(void);
+static void btn_map_select(void);
+
+GameSetupUI::GameSetupUI() {
+    Button *btn_begin = new Button("Begin");
+    btn_begin->setpos(display_x/2 - 40, display_y - 70,
+                      display_x/2 + 40, display_y - 30);
+    btn_begin->onMouseDown = btn_begin_cb;
+    btn_begin->set_offsets();
+    addWidget(btn_begin);
+
+    int y = 45;
+
+    vector<Widget *> map_btns;
+
+    for(auto&& map_name : { "Europe", "North America", "Euroasia",
+                "Australia", "Indochina", "Siberia",
+                "Pacific Domains", "Africa", "South America" })
+        {
+            Button *btn_map = new Button(map_name);
+            int xsize = 10 + al_get_text_width(g_font, map_name);
+            btn_map->setpos(150,  y,
+                            150 + xsize, y + 30);
+            btn_map->onMouseDown = btn_map_select;
+            btn_map->set_offsets();
+            btn_map->m_type = WidgetType::MapSelectButton;
+            map_btns.push_back(btn_map);
+
+            y += 35;
+        }
+
+    addWidgets(map_btns);
+
+    // press the first button
+    Button *btn = static_cast<Button*>(map_btns.front());
+    btn->m_pressed = true;
+    btn->m_color = color_red_muted;
+    m_selected_map = btn;
+
+    y = 150;
+    Button *btn_blue_player_ai = new Button("vs. A.I.");
+    int xsize = 10 + al_get_text_width(g_font, "vs. A.I.");
+    btn_blue_player_ai->setpos(display_x - 200 - xsize,  y,
+                               display_x - 200, y + 30);
+    btn_blue_player_ai->onMouseDown = NULL;
+    btn_blue_player_ai->set_offsets();
+    btn_blue_player_ai->m_pressed = true;
+    btn_blue_player_ai->m_color = color_blue_muted;
+    addWidget(btn_blue_player_ai);
+
+    Button *btn_blue_player_human = new Button("vs. Human");
+    xsize = 10 + al_get_text_width(g_font, "vs. Human");
+    btn_blue_player_human->setpos(display_x - 200 - xsize, y + 35,
+                                  display_x - 200, y + 65);
+    btn_blue_player_human->onMouseDown = NULL;
+    btn_blue_player_human->set_offsets();
+    btn_blue_player_human->m_color = color_blue;
+    addWidget(btn_blue_player_human);
+}
+
+static void btn_map_select(void) {
+    for(auto&& w : GameSetup_UI->widgets) {
+        if(w->m_type == WidgetType::MapSelectButton) {
+            Button *b = static_cast<Button *>(w);
+            if(b->m_pressed == true) {
+                GameSetup_UI->m_selected_map = b;
+                b->m_color = color_red_muted;
+            }
+        }
+    }
+    for(auto&& w : GameSetup_UI->widgets) {
+        if(w->m_type == WidgetType::MapSelectButton) {
+            Button *b = static_cast<Button *>(w);
+            b->m_pressed = false;
+            if(b != GameSetup_UI->m_selected_map) {
+                b->m_color = color_red;
+            }
+        }
+    }
+}
+
+static void btn_begin_cb(void) {
+    new_game();
+    ui = Map_UI;
+}
 
 static inline void draw_hex(float x, float y, float a, float zrot, float cr, float cg, float cb, float r, float d) {
     glLoadIdentity();
@@ -767,16 +995,17 @@ void MenuEntry::draw(void) {
     al_draw_text(g_font, color_white, m_x1 + m_x_off, m_y1 + m_y_off, 0, m_name);
 }
 
-static void new_game(void);
 static void delete_game(void);
+static void deinit(void);
 
 void MainMenuUI::handlePress(const char *name) {
     if(strcmp(name, "New") == 0) {
         if(Map_UI != NULL) delete_game();
-        new_game();
+        ui = GameSetup_UI;
     }
     else if(strcmp(name, "Exit") == 0) {
         if(Map_UI != NULL) delete_game();
+        deinit();
         exit(0);
     }
     else {
@@ -805,6 +1034,9 @@ MainMenuUI::MainMenuUI() {
 }
 
 void MapUI::mouseDownEvent(void) {
+    if(m_ai_replay == true or m_game_won or m_game_lost)
+        return;
+
     if(mouse_button == 2) {
         msg->hide();
         set_current_action(MapAction::MovingUnits);
@@ -924,45 +1156,41 @@ void HexMap::undo(void) {
     if(m_old_states.empty() == true)
         return;
 
-    vector<Hex *> old = m_old_states.back();
-    debug("undo to %p", old);
+    SideController &old_cont = m_old_states.back().m_sc;
+    vector<Hex> old_hexes = m_old_states.back().m_hexes;
+
+    debug("undo to %p", old_hexes);
     msg->add("Undo!");
 
-    assert(old.size() == m_hexes.size());
+    assert(old_hexes.size() == m_hexes.size());
 
     for(size_t i = 0; i < m_hexes.size(); i++) {
-        *m_hexes[i] = *old[i];
+        *m_hexes[i] = old_hexes[i];
     }
 
-    for(auto&& h : old) {
-        delete h;
-    }
+    *(game->controller()) = old_cont;
+
     m_old_states.pop_back();
     clear_active_hex();
 }
 
 void HexMap::store_current_state(void) {
-    vector<Hex *> copy;
+    vector<Hex> copy;
 
     for(auto&& h : m_hexes) {
-        Hex *hc = new Hex(*h);
-        copy.push_back(hc);
+        copy.push_back(*h);
     }
 
-    m_old_states.push_back(copy);
+    StoredState stored_state;
+    stored_state.m_sc = *(game->controller());
+    stored_state.m_hexes = copy;
 
-    printf("states: ");
-    for(auto&& s : m_old_states)
-        printf("%p, ", s);
-    printf("\n");
+    m_old_states.push_back(stored_state);
+
+    debug("HexMap::store_current_state(): undo states: %d", m_old_states.size());
 }
 
 void HexMap::clear_old_states(void) {
-    for(auto&& s : m_old_states) {
-        for(auto&& h : s) {
-            delete h;
-        }
-    }
     m_old_states.clear();
 }
 
@@ -1025,10 +1253,22 @@ void HexMap::harvest(void) {
 }
 
 void HexMap::move_or_attack(Hex *attacker, Hex *defender) {
+    assert(defender != NULL);
+    assert(defender->m_level >= 1);
+    assert(attacker != NULL);
+    assert(attacker->m_level >= 1);
+    assert(attacker->m_units_free >= 0);
+
     if(defender->m_side == Side::Neutral or
        defender->m_side == attacker->m_side) {
         // moving units
-        int moved = min(m_moving_units, min(attacker->m_units_free, m_max_units_moved));
+        int moved =
+            min({
+                    m_moving_units,
+                    attacker->m_units_free,
+                    m_max_units_moved
+               });
+
         defender->m_units_moved += moved;
         defender->m_side = attacker->m_side;
         attacker->m_units_free -= moved;
@@ -1036,7 +1276,14 @@ void HexMap::move_or_attack(Hex *attacker, Hex *defender) {
     }
     else {
         // attacking
-        int moved = min(m_moving_units, min(attacker->m_units_free, m_max_units_moved));
+        int moved =
+            min({
+                    m_moving_units,
+                    attacker->m_units_free,
+                    m_max_units_moved
+               });
+
+        debug("%p attacked %p with %d", defender, attacker, moved);
         if(moved >= defender->m_units_free + defender->m_units_moved) {
             // we've conquered this hex
             defender->m_units_moved = moved - (defender->m_units_free + defender->m_units_moved);
@@ -1045,13 +1292,14 @@ void HexMap::move_or_attack(Hex *attacker, Hex *defender) {
             attacker->m_units_free -= moved;
         } else {
             // attacked but not conquered
-            int free_units_killed = max(defender->m_units_free, defender->m_units_free - moved);
             attacker->m_units_free -= moved;
-            defender->m_units_free -= free_units_killed;
-            int rest = moved - free_units_killed;
-            debug("rest %d", rest);
-            if(rest > 0)
-                defender->m_units_moved -= rest;
+
+            if(moved < defender->m_units_free) {
+                defender->m_units_free -= moved;
+            } else {
+                defender->m_units_moved -= (moved - defender->m_units_free);
+                defender->m_units_free = 0;
+            }
         }
     }
 
@@ -1089,25 +1337,22 @@ void MapUI::MapHexSelected(Hex *h) {
        h->m_side == game->m_current_controller->m_side) {
         h->m_active = true;
 
-        if(get_current_action() == MapAction::MovingUnits)
+        if(get_current_action() == MapAction::MovingUnits) {
             msg->add("Moving %d units.", map->m_moving_units);
+        }
     }
 
     if(get_current_action() == MapAction::MovingUnits) {
+        if(prev == NULL) {
+            mark(map->neighbors(h));
+        }
+
         if(prev != NULL && h != prev && prev->m_units_free > 0 && h->alive()) {
             bool move_ok = false;
 
             if(prev->m_side != h->m_side) {
                 if(is_neighbor(prev, h) == true) {
                     move_ok = true;
-                }
-                else {
-                    if(game->controller()->m_carriers >= 1) {
-                        game->controller()->m_carriers -= 1;
-                        move_ok = true;
-                    } else {
-                        return;
-                    }
                 }
             } else {
                 move_ok = true;
@@ -1117,6 +1362,12 @@ void MapUI::MapHexSelected(Hex *h) {
                 map->store_current_state();
                 map->move_or_attack(prev, h);
                 clear_active_hex();
+            }
+            else if(game->controller()->m_carriers >= 1) {
+                map->store_current_state();
+                map->move_or_attack(prev, h);
+                clear_active_hex();
+                game->controller()->m_carriers -= 1;
             }
         }
     }
@@ -1236,53 +1487,77 @@ void MapUI::MapHexSelected(Hex *h) {
 }
 
 void MapUI::draw(void) {
+    // draw marked hexes underneath
+    for(auto&& marked : m_marked) {
+        const float space = 2;
+        draw_hex(vx(marked->m_cx), vy(marked->m_cy),
+                 scale * (marked->m_a - space), 0, 1, 1, 1,
+                 0.5 * sqrt(3) * (marked->m_a - space) * scale,
+                 sin(1.0 / 2.0) * (marked->m_a - space) * scale);
+
+    }
+    // draw normal hexes
     for(auto&& w : widgets) {
         if(w->m_type == WidgetType::Hex) {
             w->draw();
         }
     }
 
-    // UI::draw();
+    if(m_game_won or m_game_lost) {
+        al_draw_filled_rectangle(display_x/2 - 150, display_y/2 - 50,
+                                 display_x/2 + 150, display_y/2 + 50,
+                                 color_red);
 
-    Hex *act = NULL;
-    for(auto&& h : map->m_hexes) {
-        if(h->m_active == true) {
-            act = h;
-            break;
-        }
+        const char *txt = "You've won!";
+        if(m_game_lost)
+            txt = "You've lost!";
+
+        int x_off = al_get_text_width(g_font, txt) / 2;
+
+        al_draw_text(g_font, color_white, display_x/2 - x_off, display_y/2-20, 0, txt);
+
+        txt = "Press any key to continue.";
+        x_off = al_get_text_width(g_font, txt) / 2;
+
+        al_draw_text(g_font, color_white, display_x/2 - x_off, display_y/2+4, 0, txt);
+        return;
     }
 
-    if(act != NULL) {
-        if(m_current_action == MapAction::MovingUnits) {
-            al_draw_circle(vx(act->m_x1 + act->m_circle_bb_radius),
-                           vy(act->m_y1 + act->m_circle_bb_radius),
-                           round(2.4 * act->m_circle_bb_radius * scale),
-                           color_very_red,
-                           2);
-        }
-        else if(m_current_action == MapAction::FireCannon and
-                act->m_contains_cannon == true) {
-            al_draw_circle(vx(act->m_x1 + act->m_circle_bb_radius),
-                           vy(act->m_y1 + act->m_circle_bb_radius),
-                           round((0.4 + 2.0 * map->m_cannon_min_range) * act->m_circle_bb_radius * scale),
-                           color_very_red,
-                           2);
-            al_draw_circle(vx(act->m_x1 + act->m_circle_bb_radius),
-                           vy(act->m_y1 + act->m_circle_bb_radius),
-                           round((0.4 + 2.0 * map->m_cannon_max_range) * act->m_circle_bb_radius * scale),
-                           color_very_red,
-                           2);
+    // draw all other widgets
+    if(m_draw_buttons == true) {
+        for(auto&& w : widgets) {
+            if(w->m_type != WidgetType::Hex) {
+                w->draw();
+            }
         }
     }
-    for(auto&& w : widgets) {
-        if(w->m_type != WidgetType::Hex) {
-            w->draw();
-        }
-    }
-
 }
 
+static void end_turn_cb(void);
+
 void MapUI::update(void) {
+    if(m_ai_replay == true) {
+        if(al_key_down(&keyboard_state, ALLEGRO_KEY_S)) {
+            while(ai_replay()) {};
+            m_ai_acts.clear();
+            m_ai_replay = false;
+            end_turn_cb();
+            return;
+        }
+
+        if(m_ai_play_time >= m_ai_play_delay) {
+            if(ai_replay() == false) {
+                m_ai_acts.clear();
+                m_ai_replay = false;
+                end_turn_cb();
+                return;
+            }
+            m_ai_play_time = 0;
+        }
+        m_ai_play_time++;
+        return;
+    }
+
     int d = 100 * dt;
 
     if(al_key_down(&keyboard_state, ALLEGRO_KEY_UP))
@@ -1302,6 +1577,10 @@ void MapUI::update(void) {
     else if(al_key_down(&keyboard_state, ALLEGRO_KEY_CLOSEBRACE)) {
         scale /= ds;
     }
+}
+
+static void goto_mainmenu(void) {
+    ui = MainMenu_UI;
 }
 
 static void allegro_init() {
@@ -1409,8 +1688,23 @@ Hex *addHex(float x, float y, float a, int level, int index) {
     return h;
 }
 
+static void is_won(void) {
+    int red = 0;
+    int blue = 0;
+    for(auto&& h : map->m_hexes) {
+        if(h->alive() && h->m_units_free + h->m_units_moved >= 1) {
+            if(h->m_side == Side::Red) red++;
+            else if(h->m_side == Side::Blue) blue++;
+        }
+    }
+    if(blue == 0)
+        Map_UI->m_game_won = true;
+    if(red == 0)
+        Map_UI->m_game_lost = true;
+}
+
 static void end_turn_cb(void) {
- begin:
+    is_won();
 
     SideController *s = game->get_next_controller();
 
@@ -1423,15 +1717,23 @@ static void end_turn_cb(void) {
     sideinfo2->set_offsets();
 
     msg->add("It's %s's turn", s->m_name);
+
     if(s->is_AI() == true) {
-        s->do_AI();
-        goto begin;
+        Map_UI->ai_play(s->do_AI());
     }
 }
 
 static void build_harvester_cb(void) {
     if(game->controller_has_resources(10)) {
         clear_active_hex();
+
+        vector<Hex *> mark;
+        for(auto&& h : map->m_hexes)
+            if(h->alive() && h->m_side == game->controller()->m_side &&
+               h->m_contains_harvester == false)
+                mark.push_back(h);
+        Map_UI->mark(mark);
+
         msg->add("Select hex to build on.");
         Map_UI->set_current_action(MapAction::BuildHarvester);
     }
@@ -1442,11 +1744,27 @@ static void build_harvester_cb(void) {
 }
 static void destroy_harvester_cb(void) {
     clear_active_hex();
+
+    vector<Hex *> mark;
+    for(auto&& h : map->m_hexes)
+        if(h->alive() && h->m_side == game->controller()->m_side &&
+           h->m_contains_harvester == true)
+            mark.push_back(h);
+    Map_UI->mark(mark);
+
     Map_UI->set_current_action(MapAction::DestroyHarvester);
 }
 static void build_armory_cb(void) {
     if(game->controller_has_resources(35)) {
         clear_active_hex();
+
+        vector<Hex *> mark;
+        for(auto&& h : map->m_hexes)
+            if(h->alive() && h->m_side == game->controller()->m_side &&
+               h->m_contains_armory == false)
+                mark.push_back(h);
+        Map_UI->mark(mark);
+
         msg->add("Select hex to build on.");
         Map_UI->set_current_action(MapAction::BuildArmory);
     } else {
@@ -1456,6 +1774,7 @@ static void build_armory_cb(void) {
 }
 static void build_carrier_cb(void) {
     if(game->controller_has_resources(50)) {
+        map->store_current_state();
         game->controller_pay(50);
         game->controller()->m_carriers += 1;
         clear_active_hex();
@@ -1469,6 +1788,14 @@ static void build_carrier_cb(void) {
 static void build_walker_cb(void) {
     if(game->controller_has_resources(8)) {
         clear_active_hex();
+
+        vector<Hex *> mark;
+        for(auto&& h : map->m_hexes)
+            if(h->alive() && h->m_side == game->controller()->m_side &&
+               h->m_contains_armory == true)
+                mark.push_back(h);
+        Map_UI->mark(mark);
+
         msg->add("Select hex to build on.");
         Map_UI->set_current_action(MapAction::BuildWalker);
     } else {
@@ -1479,6 +1806,14 @@ static void build_walker_cb(void) {
 static void build_cannon_cb(void) {
     if(game->controller_has_resources(30)) {
         clear_active_hex();
+
+        vector<Hex *> mark;
+        for(auto&& h : map->m_hexes)
+            if(h->alive() && h->m_side == game->controller()->m_side &&
+               h->m_contains_cannon == false)
+                mark.push_back(h);
+        Map_UI->mark(mark);
+
         msg->add("Select hex to build on.");
         Map_UI->set_current_action(MapAction::BuildCannon);
     } else {
@@ -1489,6 +1824,14 @@ static void build_cannon_cb(void) {
 static void build_cannon_ammo_cb(void) {
     if(game->controller_has_resources(20)) {
         clear_active_hex();
+
+        vector<Hex *> mark;
+        for(auto&& h : map->m_hexes)
+            if(h->alive() && h->m_side == game->controller()->m_side &&
+               h->m_contains_cannon == true)
+                mark.push_back(h);
+        Map_UI->mark(mark);
+
         msg->add("Select cannon to add ammo to.");
         Map_UI->set_current_action(MapAction::AddAmmoToCannon);
     } else {
@@ -1520,6 +1863,16 @@ static void fire_cannon_cb(void) {
         fatal_error("oy! that's not your cannon!");
     }
 
+    Map_UI->clear_mark();
+    vector<Hex *> hexes_in_range;
+    for(auto&& h : map->m_hexes) {
+        float dist = map->hex_distance(act, h);
+        if(dist > (0.4 + 2 * map->m_cannon_min_range) * act->m_circle_bb_radius and dist < (0.4 + 2 * map->m_cannon_max_range) * act->m_circle_bb_radius) {
+            hexes_in_range.push_back(h);
+        }
+    }
+    Map_UI->mark(hexes_in_range);
+
     msg->add("Select a target.");
     Map_UI->set_current_action(MapAction::FireCannon);
 }
@@ -1528,7 +1881,7 @@ static void map_undo_cb(void) {
 }
 
 static void init_buttons(void) {
-    Button *end_turn = new Button("Turn");
+    SideButton *end_turn = new SideButton("Turn");
     end_turn->m_x1 = display_x - 70;
     end_turn->m_y1 = display_y - 50;
     end_turn->m_x2 = display_x;
@@ -1537,7 +1890,7 @@ static void init_buttons(void) {
     end_turn->set_offsets();
     Map_UI->addWidget(end_turn);
 
-    Button *undo = new Button("Undo");
+    SideButton *undo = new SideButton("Undo");
     undo->m_x1 = display_x - 70;
     undo->m_y1 = display_y - 105;
     undo->m_x2 = display_x;
@@ -1552,7 +1905,7 @@ static void init_buttons(void) {
     int btn_sy = 40;
     int spc_y = 5;
 
-    Button *button_build_harvester = new Button("Harv +");
+    SideButton *button_build_harvester = new SideButton("Harv +");
     button_build_harvester->m_x1 = btn_startx;
     button_build_harvester->m_y1 = btn_starty;
     button_build_harvester->m_x2 = btn_sx;
@@ -1561,7 +1914,7 @@ static void init_buttons(void) {
     button_build_harvester->set_offsets();
     Map_UI->addWidget(button_build_harvester);
 
-    Button *button_destroy_harvester = new Button("Harv -");
+    SideButton *button_destroy_harvester = new SideButton("Harv -");
     button_destroy_harvester->m_x1 = btn_startx;
     button_destroy_harvester->m_y1 = btn_starty + 1 * (btn_sy + spc_y);
     button_destroy_harvester->m_x2 = btn_sx;
@@ -1570,7 +1923,7 @@ static void init_buttons(void) {
     button_destroy_harvester->set_offsets();
     Map_UI->addWidget(button_destroy_harvester);
 
-    Button *button_build_cannon = new Button("Cann +");
+    SideButton *button_build_cannon = new SideButton("Cann");
     button_build_cannon->m_x1 = btn_startx;
     button_build_cannon->m_y1 = btn_starty + 2 * (btn_sy + spc_y);
     button_build_cannon->m_x2 = btn_sx;
@@ -1579,7 +1932,7 @@ static void init_buttons(void) {
     button_build_cannon->set_offsets();
     Map_UI->addWidget(button_build_cannon);
 
-    Button *button_build_cannon_ammo = new Button("Ammo");
+    SideButton *button_build_cannon_ammo = new SideButton("Ammo");
     button_build_cannon_ammo->m_x1 = btn_startx;
     button_build_cannon_ammo->m_y1 = btn_starty + 3 * (btn_sy + spc_y);
     button_build_cannon_ammo->m_x2 = btn_sx;
@@ -1588,7 +1941,7 @@ static void init_buttons(void) {
     button_build_cannon_ammo->set_offsets();
     Map_UI->addWidget(button_build_cannon_ammo);
 
-    Button *button_fire_cannon = new Button("Fire");
+    SideButton *button_fire_cannon = new SideButton("Fire");
     button_fire_cannon->m_x1 = btn_startx;
     button_fire_cannon->m_y1 = btn_starty + 4 * (btn_sy + spc_y);
     button_fire_cannon->m_x2 = btn_sx;
@@ -1597,7 +1950,7 @@ static void init_buttons(void) {
     button_fire_cannon->set_offsets();
     Map_UI->addWidget(button_fire_cannon);
 
-    Button *button_build_armory = new Button("Armo");
+    SideButton *button_build_armory = new SideButton("Armo");
     button_build_armory->m_x1 = btn_startx;
     button_build_armory->m_y1 = btn_starty + 5 * (btn_sy + spc_y);
     button_build_armory->m_x2 = btn_sx;
@@ -1606,7 +1959,7 @@ static void init_buttons(void) {
     button_build_armory->set_offsets();
     Map_UI->addWidget(button_build_armory);
 
-    Button *button_build_walker = new Button("Walk");
+    SideButton *button_build_walker = new SideButton("Walk");
     button_build_walker->m_x1 = btn_startx;
     button_build_walker->m_y1 = btn_starty + 6 * (btn_sy + spc_y);
     button_build_walker->m_x2 = btn_sx;
@@ -1615,7 +1968,7 @@ static void init_buttons(void) {
     button_build_walker->set_offsets();
     Map_UI->addWidget(button_build_walker);
 
-    Button *button_build_carrier = new Button("Carr");
+    SideButton *button_build_carrier = new SideButton("Carr");
     button_build_carrier->m_x1 = btn_startx;
     button_build_carrier->m_y1 = btn_starty + 7 * (btn_sy + spc_y);
     button_build_carrier->m_x2 = btn_sx;
@@ -1630,28 +1983,32 @@ static void init_buttons(void) {
                     button_build_walker, button_build_carrier };
 }
 
-static void gen_test_map(void) {
+static void gen_map(int seed) {
     int i = 0;
+    bool red = false;
+
     for(int x = 0; x < 8; x++) {
         for(int y = 0; y < 5; y++) {
 
-            int level = 2 + (x * y) % 7;
+            int level = 2 + (x * y) % max(3, min(seed + 1, 9));
+
             Hex *h = addHex(x, y, 50, level, i);
             i++;
 
-            if(level == 5) {
+            if(level == 3) {
                 h->m_contains_harvester = true;
-                // h->m_contains_cannon = true;
-                // h->m_ammo = 3;
+                h->m_contains_cannon = true;
+                h->m_ammo = 3;
                 h->m_side = Side::Red;
-                h->m_units_free = 5;
+                h->m_units_free = 3;
                 h->m_units_moved = 0;
-            }
-            if(level == 4) {
-                h->m_contains_harvester = true;
-                h->m_side = Side::Blue;
-                h->m_units_free = 5;
-                h->m_units_moved = 0;
+
+                if(red == false) {
+                    h->m_side = Side::Blue;
+                    red = true;
+                } else {
+                    red = false;
+                }
             }
         }
     }
@@ -1662,6 +2019,7 @@ static void init(void) {
 
     init_colors();
     MainMenu_UI = new MainMenuUI;
+    GameSetup_UI = new GameSetupUI;
 
     Map_UI = NULL;
 }
@@ -1674,7 +2032,20 @@ static void new_game(void) {
     Map_UI = new MapUI;
     Map_UI->clear_to = color_black;
 
-    gen_test_map();
+    const char *map_name = GameSetup_UI->m_selected_map->m_name;
+    int seed = 0;
+
+    if(strcmp(map_name, "Europe") == 0) { seed = 1; }
+    else if(strcmp(map_name, "North America") == 0) { seed = 2; }
+    else if(strcmp(map_name, "Euroasia") == 0) { seed = 3; }
+    else if(strcmp(map_name, "Australia") == 0) { seed = 4; }
+    else if(strcmp(map_name, "Indochina") == 0) { seed = 5; }
+    else if(strcmp(map_name, "Siberia") == 0) { seed = 6; }
+    else if(strcmp(map_name, "Pacific Domains") == 0) { seed = 7; }
+    else if(strcmp(map_name, "Africa") == 0) { seed = 8; }
+    else if(strcmp(map_name, "South America") == 0) { seed = 9; }
+
+    gen_map(seed);
     map->gen_neighbors();
 
     init_buttons();
@@ -1706,7 +2077,7 @@ static void delete_game(void) {
     Map_UI = NULL;
 }
 
-static bool is_opt_button(Button *b) {
+static bool is_opt_button(SideButton *b) {
     return find(opt_buttons.begin(), opt_buttons.end(), b) != opt_buttons.end();
 }
 
@@ -1720,6 +2091,7 @@ static void clear_active_hex(void) {
     for(auto &&h : map->m_hexes) {
         h->m_active = false;
     }
+    Map_UI->clear_mark();
 }
 
 void register_global_key_callback(bool (*cb)(void)) {
@@ -1730,7 +2102,7 @@ static void pressEsc(void) {
     if(ui == MainMenu_UI && Map_UI != NULL) {
         ui = Map_UI;
     }
-    else if(ui == Map_UI) {
+    else if(ui == Map_UI or ui == GameSetup_UI) {
         ui = MainMenu_UI;
     }
 }
@@ -1847,6 +2219,7 @@ void mainloop() {
 static void deinit(void) {
     if(Map_UI != NULL)
         delete_game();
+    delete GameSetup_UI;
     delete MainMenu_UI;
 }
 
