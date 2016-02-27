@@ -22,6 +22,8 @@
 #include <sstream>
 #include <chrono>
 
+#include <dirent.h>
+
 #include "./util.h"
 
 using namespace std;
@@ -29,13 +31,14 @@ using namespace std;
 struct HexMap;
 struct Game;
 struct SideFlag;
-struct SideButton;
+struct SideButton; // TODO remove
 struct MessageLog;
 struct SideInfo;
 
 struct UI;
 struct MainMenuUI;
 struct GameSetupUI;
+struct MapEditorUI;
 struct MapUI;
 
 ALLEGRO_DISPLAY *display;
@@ -56,6 +59,7 @@ HexMap *map;
 UI *ui;
 MainMenuUI *MainMenu_UI;
 GameSetupUI *GameSetup_UI;
+MapEditorUI *MapEditor_UI;
 MapUI *Map_UI;
 float view_x = -65;
 float view_y = 0;
@@ -76,18 +80,25 @@ inline float vy(float y) {
     return round((y - view_y) * scale);
 }
 
+enum class GameType {
+    Game,
+    Editor,
+};
+
 enum class WidgetType {
     Hex,
     Button,
-    SideButton,
+    SideButton, // remove
     MenuEntry,
-    MapSelectButton,
+    MapSelectButton, // remove
     Other,
 };
 
 enum class Side {
     Red,
     Blue,
+    Green,
+    Yellow,
     Neutral,
 };
 
@@ -101,6 +112,20 @@ enum class MapAction {
     BuildWalker,
     BuildArmory,
     BuildCarrier,
+};
+
+enum class MapEditorAction {
+    AddHealth,
+    RemoveHealth,
+    ToggleHarvester,
+    ToggleArmory,
+    ToggleCannon,
+    ToggleCannonAmmo,
+    AddUnit,
+    RemoveUnit,
+    PaintNeutral,
+    PaintRed,
+    PaintBlue,
 };
 
 ALLEGRO_COLOR color_very_red;
@@ -267,7 +292,6 @@ struct Button : Widget {
     const char *m_name;
     float m_x_off;
     float m_y_off;
-    bool m_active;
     bool m_pressed;
     ALLEGRO_COLOR m_color = color_red;
 
@@ -276,7 +300,6 @@ struct Button : Widget {
         m_type = WidgetType::Button;
         m_x_off = 0;
         m_y_off = 0;
-        m_active = false;
         m_pressed = false;
     }
 
@@ -410,6 +433,10 @@ struct HexMap {
     HexMap() { }
     ~HexMap();
 
+    void save(ostream &os);
+    void load(istream &is, bool prune);
+    void prune(void);
+
     float hex_distance(Hex *h1, Hex *h2);
     void gen_neighbors(void);
     vector<Hex *> neighbors(Hex *base);
@@ -429,6 +456,7 @@ static void clear_active_hex(void);
 
 struct Game {
     vector<SideController *> players;
+    SideController *m_current_controller;
 
     Game() {
         players.push_back(new SideController(Side::Red));
@@ -439,7 +467,6 @@ struct Game {
         for(auto&& player : players) delete player;
     }
 
-    SideController *m_current_controller;
     SideController *get_next_controller();
 
     SideController *controller(void) {
@@ -526,6 +553,29 @@ struct Hex : Widget {
 
     Side m_side;
 
+    void save(ostream &os) {
+        os << m_index << ' ' << m_level << ' ' << m_a << ' '
+           << m_r << ' ' << m_active << ' ' << m_marked << ' '
+           << m_cx << ' ' << m_cy << ' ' << m_contains_harvester << ' '
+           << m_harvested << ' ' << m_contains_armory << ' '
+           << m_contains_cannon << ' ' << m_ammo << ' '
+           << m_loaded_ammo << ' ' << m_units_free << ' '
+           << m_units_moved << ' ' << (int)m_side;
+    }
+
+    void load(istream &is) {
+        int _side;
+        is >> m_index >> m_level >> m_a
+           >> m_r >> m_active >> m_marked
+           >> m_cx >> m_cy >> m_contains_harvester
+           >> m_harvested >> m_contains_armory
+           >> m_contains_cannon >> m_ammo
+           >> m_loaded_ammo >> m_units_free
+           >> m_units_moved >> _side;
+        m_side = (Side)_side;
+    }
+
+    Hex() {}
     Hex(float x1, float y1, float a, int level, int index) {
         m_index = index;
 
@@ -540,12 +590,8 @@ struct Hex : Widget {
         m_cy = m_y1 + r;
         m_x2 = m_x1 + 2 * r;
         m_y2 = m_y1 + 2 * r;
-        m_circle_bb = true;
-        m_circle_bb_radius = r;
-
         m_active = false;
         m_marked = false;
-        m_type = WidgetType::Hex;
 
         m_level = level;
         m_contains_harvester = false;
@@ -558,6 +604,18 @@ struct Hex : Widget {
         m_units_moved = 0;
 
         m_side = Side::Neutral;
+
+        InitWidget();
+    }
+
+    void InitWidget() {
+        m_circle_bb = true;
+        m_circle_bb_radius = m_r;
+        m_type = WidgetType::Hex;
+        m_x1 = m_cx - m_r;
+        m_y1 = m_cy - m_r;
+        m_x2 = m_cx - 2 * m_r;
+        m_y2 = m_cy - 2 * m_r;
     }
 
     void update(void) override {
@@ -626,6 +684,69 @@ struct Hex : Widget {
                  sin(1.0 / 2.0) * (m_a - space) * scale);
 
         if(m_level == 0) return;
+
+        al_draw_textf(g_font,
+                      txt_color,
+                      vx(m_cx) - 5,
+                      vy(m_cy) - 7,
+                      0,
+                      "%d", m_level);
+
+        if(m_contains_harvester == true)
+            al_draw_text(g_font, txt_color,
+                         vx(m_cx) - 25, vy(m_cy) - 25,
+                         0, "H");
+
+        if(m_contains_armory == true)
+            al_draw_text(g_font, txt_color,
+                         vx(m_cx) - 5, vy(m_cy) - 25,
+                         0, "A");
+
+        if(m_contains_cannon == true)
+            al_draw_text(g_font, txt_color,
+                         vx(m_cx) + 15, vy(m_cy) - 25,
+                         0, "C");
+
+        if(m_ammo > 0 or m_loaded_ammo > 0)
+            al_draw_textf(g_font, txt_color,
+                         vx(m_cx) + 15, vy(m_cy) - 7,
+                          0, "%d", m_ammo + m_loaded_ammo);
+
+        if(m_units_free > 0 or m_units_moved > 0)
+            al_draw_textf(g_font, txt_color,
+                          vx(m_cx) - 12, vy(m_cy) + 10,
+                          0, "%d/%d", m_units_free, m_units_moved);
+    }
+
+    void draw_editor(void) {
+        float r = 0.5;
+        float g = 0.5;
+        float b = 0.5;
+
+        if(m_side == Side::Red) {
+            r = 0.94;
+            g = 0.5;
+            b = 0.5;
+        }
+        else if(m_side == Side::Blue) {
+                r = 0.5;
+                g = 0.5;
+                b = 0.94;
+        }
+
+        if(m_level <= 0) {
+            r /= 3;
+            g /= 3;
+            b /= 3;
+        }
+
+        ALLEGRO_COLOR txt_color = color_white;
+
+        const float space = 4;
+
+        draw_hex(vx(m_cx), vy(m_cy), scale * (m_a - space), 0, r, g, b,
+                 0.5 * sqrt(3) * (m_a - space) * scale,
+                 sin(1.0 / 2.0) * (m_a - space) * scale);
 
         al_draw_textf(g_font,
                       txt_color,
@@ -792,6 +913,110 @@ public:
     }
 };
 
+struct MapEditorUI : UI {
+    MapEditorAction m_current_action;
+    Side m_current_side;
+
+    ~MapEditorUI() {
+        for(auto&& w : widgets) delete w;
+    }
+
+    void draw(void) override;
+    void update(void) override;
+
+    void set_current_action(MapEditorAction act) {
+        m_current_action = act;
+    }
+    void mouseDownEvent(void);
+    MapEditorAction get_current_action(void) {
+        return m_current_action;
+    }
+    void MapHexSelected(Hex *h);
+};
+
+void MapEditorUI::draw(void) {
+    // draw normal hexes
+    for(auto&& h : map->m_hexes) {
+        h->draw_editor();
+    }
+
+    for(auto&& w : widgets) {
+        if(w->m_type != WidgetType::Hex) {
+            w->draw();
+        }
+    }
+}
+
+void MapEditorUI::update(void) {
+    int d = 400 * dt;
+
+    if(al_key_down(&keyboard_state, ALLEGRO_KEY_UP))
+        view_y -= d;
+    else if(al_key_down(&keyboard_state, ALLEGRO_KEY_DOWN))
+        view_y += d;
+
+    if(al_key_down(&keyboard_state, ALLEGRO_KEY_LEFT))
+        view_x -= d;
+    else if(al_key_down(&keyboard_state, ALLEGRO_KEY_RIGHT))
+        view_x += d;
+
+    float ds = 1.02;
+    if(al_key_down(&keyboard_state, ALLEGRO_KEY_OPENBRACE)) {
+        scale *= ds;
+    }
+    else if(al_key_down(&keyboard_state, ALLEGRO_KEY_CLOSEBRACE)) {
+        scale /= ds;
+    }
+}
+
+void MapEditorUI::mouseDownEvent(void) {
+    if(mouse_button == 2) {
+        msg->hide();
+        set_current_action(MapEditorAction::AddHealth);
+        clear_active_hex();
+    }
+    UI::mouseDownEvent();
+}
+
+void MapEditorUI::MapHexSelected(Hex *h) {
+    if(get_current_action() == MapEditorAction::AddHealth) {
+        h->m_level++;
+    }
+    else if(get_current_action() == MapEditorAction::RemoveHealth) {
+        h->m_level--;
+    }
+    else if(get_current_action() == MapEditorAction::ToggleHarvester) {
+        h->m_contains_harvester = not h->m_contains_harvester;
+    }
+    else if(get_current_action() == MapEditorAction::ToggleCannon) {
+        h->m_contains_cannon = not h->m_contains_cannon;
+    }
+    else if(get_current_action() == MapEditorAction::ToggleArmory) {
+        h->m_contains_armory = not h->m_contains_armory;
+    }
+    else if(get_current_action() == MapEditorAction::ToggleCannonAmmo) {
+        if(h->m_ammo < 1) { h->m_ammo = 1; }
+        else { h->m_ammo = 0; }
+    }
+    else if(get_current_action() == MapEditorAction::AddUnit) {
+        h->m_units_free += 1;
+    }
+    else if(get_current_action() == MapEditorAction::RemoveUnit) {
+        if(h->m_units_free > 0) {
+            h->m_units_free -= 1;
+        }
+    }
+    else if(get_current_action() == MapEditorAction::PaintNeutral) {
+        h->m_side = Side::Neutral;
+    }
+    else if(get_current_action() == MapEditorAction::PaintRed) {
+        h->m_side = Side::Red;
+    }
+    else if(get_current_action() == MapEditorAction::PaintBlue) {
+        h->m_side = Side::Blue;
+    }
+}
+
 static bool marked_hexes(void) {
     return Map_UI->m_marked_hexes;
 }
@@ -847,17 +1072,39 @@ struct GameSetupUI : UI {
 
     vector<Button *> m_player_select_btns;
     vector<Button *> m_map_select_btns;
-    
+
     GameSetupUI();
-    ~GameSetupUI() { for(auto&& w: widgets) delete w; }
+    ~GameSetupUI() {
+        for(auto&& w: m_map_select_btns) free((char*)w->m_name);
+        for(auto&& w: widgets) delete w;
+    }
 };
 
-static void new_game(void);
+static void new_game(GameType t);
 static void btn_begin_cb(void);
+static void btn_editor_cb(void);
 static void btn_map_select_cb(void);
 static void btn_player_select_cb(void);
 
 GameSetupUI::GameSetupUI() {
+    DIR *dpdf;
+    vector<string> map_filenames;
+    dpdf = opendir("./maps/");
+    if (dpdf != NULL){
+        string suffix = ".map";
+        struct dirent *epdf;
+        while ((epdf = readdir(dpdf))) {
+            string filename = string(epdf->d_name);
+            if(filename.size() < suffix.size())
+                continue;
+            if(filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                map_filenames.push_back(filename);
+            }
+        }
+    } else {
+        fatal_error("Couldn't open ./maps: ", strerror(errno));
+    }
+
     Button *btn_begin = new Button("Begin");
     btn_begin->setpos(display_x/2 - 40, display_y - 70,
                       display_x/2 + 40, display_y - 30);
@@ -865,22 +1112,27 @@ GameSetupUI::GameSetupUI() {
     btn_begin->set_offsets();
     addWidget(btn_begin);
 
-    int y = 45;
+    Button *btn_editor = new Button("Editor");
+    btn_editor->setpos(display_x/2 - 40, display_y - 115,
+                       display_x/2 + 40, display_y - 75);
+    btn_editor->onMouseDown = btn_editor_cb;
+    btn_editor->set_offsets();
+    addWidget(btn_editor);
 
     vector<Widget *> map_btns;
+    int y = 45;
 
-    for(auto&& map_name : { "Europe", "North America", "Euroasia",
-                "Australia", "Indochina", "Siberia",
-                "Pacific Domains", "Africa", "South America" })
+    for(auto&& map_name : map_filenames)
         {
-            Button *btn_map = new Button(map_name);
-            int xsize = 10 + al_get_text_width(g_font, map_name);
+            Button *btn_map = new Button(strdup(map_name.c_str()));
+            int xsize = 10 + al_get_text_width(g_font, map_name.c_str());
             btn_map->setpos(150,  y,
                             150 + xsize, y + 30);
             btn_map->onMouseDown = btn_map_select_cb;
             btn_map->set_offsets();
             btn_map->m_type = WidgetType::MapSelectButton;
             map_btns.push_back(btn_map);
+            m_map_select_btns.push_back(btn_map);
 
             y += 35;
         }
@@ -949,8 +1201,11 @@ static void btn_player_select_cb(void) {
 }
 
 static void btn_begin_cb(void) {
-    new_game();
-    ui = Map_UI;
+    new_game(GameType::Game);
+}
+
+static void btn_editor_cb(void) {
+    new_game(GameType::Editor);
 }
 
 static inline void draw_hex(float x, float y, float a, float zrot, float cr, float cg, float cb, float r, float d) {
@@ -1160,6 +1415,7 @@ void UI::mouseDownEvent(void) {
             bool hit = is_hit(widget);
 
             if(hit == true) {
+                debug("hit!");
                 widget->mouseDownEvent();
                 if(widget->onMouseDown != nullptr) {
                     widget->onMouseDown();
@@ -1168,7 +1424,12 @@ void UI::mouseDownEvent(void) {
 
             if(hit == true and widget->m_type == WidgetType::Hex) {
                 Hex *h = static_cast<Hex *>(widget);
-                Map_UI->MapHexSelected(h);
+                if(ui == Map_UI)
+                    Map_UI->MapHexSelected(h);
+                else if(ui == MapEditor_UI)
+                    MapEditor_UI->MapHexSelected(h);
+                return;
+
             }
         }
     }
@@ -1194,29 +1455,56 @@ void UI::draw(void) {
     }
 }
 
+void HexMap::save(ostream &os) {
+    os << m_hexes.size() << '\n';
+    for(auto&& h : m_hexes) {
+        h->save(os);
+        os << '\n';
+    }
+}
+
+void HexMap::load(istream &is, bool prune) {
+    int size;
+    is >> size;
+    m_hexes.reserve(size);
+
+    // try to make sure allocated hexes aren't fragmented
+    int j = 0;
+    for(int i = 0; i < size; i++) {
+        Hex tmp;
+        tmp.load(is);
+        if(tmp.m_level >= 1 || prune == false) {
+            tmp.InitWidget();
+            tmp.m_index = j;
+            j++;
+            m_hexes.push_back(new Hex(tmp));
+        }
+    }
+}
+
 vector<Hex *> HexMap::BFS(Hex *base, int range) {
     struct bfsdata {
         float distance;
 
         bfsdata() { distance = -1; }
     };
-    
+
     vector<bfsdata> hexdata(m_hexes.size());
-    
+
     deque<Hex *> q;
     q.push_back(base);
 
     hexdata[base->m_index].distance = 0;
 
     while(not q.empty()) {
-        Hex *cur = q.back();
-        q.pop_back();
+        Hex *cur = q.front();
+        q.pop_front();
         for(auto&& neighbor : neighbors(cur)) {
-            
+
             bool not_visited = hexdata[neighbor->m_index].distance == -1;
             bool ok_side_or_base_neighbor =
                 neighbor->m_side == base->m_side || cur == base;
-            
+
             if(neighbor->alive() && not_visited && ok_side_or_base_neighbor) {
 
                 hexdata[neighbor->m_index].distance =
@@ -1440,7 +1728,7 @@ void MapUI::MapHexSelected(Hex *h) {
             if(h != prev && prev->m_units_free > 0 && h->alive()) {
                 vector<Hex *> bfs = map->BFS(prev, 4);
                 bool free_move = find(bfs.begin(), bfs.end(), h) != bfs.end();
-            
+
                 if(free_move == true) {
                     map->store_current_state();
                     map->move_or_attack(prev, h);
@@ -1573,6 +1861,25 @@ void MapUI::MapHexSelected(Hex *h) {
     }
 }
 
+static void draw_game_over(bool m_game_lost) {
+    al_draw_filled_rectangle(display_x/2 - 150, display_y/2 - 50,
+                             display_x/2 + 150, display_y/2 + 50,
+                             color_red);
+
+    const char *txt = "You've won!";
+    if(m_game_lost)
+        txt = "You've lost!";
+
+    int x_off = al_get_text_width(g_font, txt) / 2;
+
+    al_draw_text(g_font, color_white, display_x/2 - x_off, display_y/2-20, 0, txt);
+
+    txt = "Press any key to continue.";
+    x_off = al_get_text_width(g_font, txt) / 2;
+
+    al_draw_text(g_font, color_white, display_x/2 - x_off, display_y/2+4, 0, txt);
+}
+
 void MapUI::draw(void) {
     // draw normal hexes
     for(auto&& h : map->m_hexes) {
@@ -1580,22 +1887,7 @@ void MapUI::draw(void) {
     }
 
     if(m_game_won or m_game_lost) {
-        al_draw_filled_rectangle(display_x/2 - 150, display_y/2 - 50,
-                                 display_x/2 + 150, display_y/2 + 50,
-                                 color_red);
-
-        const char *txt = "You've won!";
-        if(m_game_lost)
-            txt = "You've lost!";
-
-        int x_off = al_get_text_width(g_font, txt) / 2;
-
-        al_draw_text(g_font, color_white, display_x/2 - x_off, display_y/2-20, 0, txt);
-
-        txt = "Press any key to continue.";
-        x_off = al_get_text_width(g_font, txt) / 2;
-
-        al_draw_text(g_font, color_white, display_x/2 - x_off, display_y/2+4, 0, txt);
+        draw_game_over(m_game_lost);
         return;
     }
 
@@ -1636,7 +1928,7 @@ void MapUI::update(void) {
         return;
     }
 
-    int d = 100 * dt;
+    int d = 400 * dt;
 
     if(al_key_down(&keyboard_state, ALLEGRO_KEY_UP))
         view_y -= d;
@@ -1706,6 +1998,8 @@ static void allegro_init() {
 
     display_x = 720;
     display_y = 480;
+    // display_x = 1280;
+    // display_y = 720;
 
     al_set_new_display_flags(ALLEGRO_OPENGL | ALLEGRO_WINDOWED);
 
@@ -1761,7 +2055,6 @@ Hex *addHex(float x, float y, float a, int level, int index) {
                      level,
                      index);
 
-    Map_UI->addWidget(h);
     map->m_hexes.push_back(h);
     return h;
 }
@@ -1783,7 +2076,7 @@ static void is_won(void) {
 
 static void end_turn_cb(void) {
     Map_UI->m_turn_anim = 1.0;
-    
+
     is_won();
 
     SideController *s = game->get_next_controller();
@@ -1960,14 +2253,56 @@ static void map_undo_cb(void) {
     map->undo();
 }
 
-static void init_buttons(void) {
+void editor_add_health(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::AddHealth);
+}
+void editor_remove_health(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::RemoveHealth);
+}
+void editor_toggle_harvester_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::ToggleHarvester);
+}
+void editor_toggle_armory_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::ToggleArmory);
+}
+void editor_toggle_cannon_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::ToggleCannon);
+}
+void editor_toggle_cannon_ammo_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::ToggleCannonAmmo);
+}
+void editor_add_unit_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::AddUnit);
+}
+void editor_remove_unit_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::RemoveUnit);
+}
+void editor_paint_neutral_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::PaintNeutral);
+}
+void editor_paint_red_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::PaintRed);
+}
+void editor_paint_blue_cb(void) {
+    MapEditor_UI->set_current_action(MapEditorAction::PaintBlue);
+}
+void editor_save_map_cb(void) {
+    ofstream out("test.map", ios::out);
+    for(auto&& h : map->m_hexes) if(h->m_level == 0) h->m_level = -1;
+    map->save(out);
+}
+
+static void init_buttons() {
+    /*
+      Map buttons
+     */
     SideButton *end_turn = new SideButton("Turn");
     end_turn->m_x1 = display_x - 70;
     end_turn->m_y1 = display_y - 50;
     end_turn->m_x2 = display_x;
     end_turn->m_y2 = display_y;
-    end_turn->onMouseDown = end_turn_cb;
     end_turn->set_offsets();
+    end_turn->onMouseDown = end_turn_cb;
     Map_UI->addWidget(end_turn);
 
     SideButton *undo = new SideButton("Undo");
@@ -1975,8 +2310,8 @@ static void init_buttons(void) {
     undo->m_y1 = display_y - 105;
     undo->m_x2 = display_x;
     undo->m_y2 = display_y - 55;
-    undo->onMouseDown = map_undo_cb;
     undo->set_offsets();
+    undo->onMouseDown = map_undo_cb;
     Map_UI->addWidget(undo);
 
     int btn_startx = 0;
@@ -1990,8 +2325,8 @@ static void init_buttons(void) {
     button_build_harvester->m_y1 = btn_starty;
     button_build_harvester->m_x2 = btn_sx;
     button_build_harvester->m_y2 = btn_sy;
-    button_build_harvester->onMouseDown = build_harvester_cb;
     button_build_harvester->set_offsets();
+    button_build_harvester->onMouseDown = build_harvester_cb;
     Map_UI->addWidget(button_build_harvester);
 
     SideButton *button_destroy_harvester = new SideButton("Harv -");
@@ -1999,8 +2334,8 @@ static void init_buttons(void) {
     button_destroy_harvester->m_y1 = btn_starty + 1 * (btn_sy + spc_y);
     button_destroy_harvester->m_x2 = btn_sx;
     button_destroy_harvester->m_y2 = btn_starty + 1 * (btn_sy + spc_y) + btn_sy;
-    button_destroy_harvester->onMouseDown = destroy_harvester_cb;
     button_destroy_harvester->set_offsets();
+    button_destroy_harvester->onMouseDown = destroy_harvester_cb;
     Map_UI->addWidget(button_destroy_harvester);
 
     SideButton *button_build_cannon = new SideButton("Cann");
@@ -2008,8 +2343,8 @@ static void init_buttons(void) {
     button_build_cannon->m_y1 = btn_starty + 2 * (btn_sy + spc_y);
     button_build_cannon->m_x2 = btn_sx;
     button_build_cannon->m_y2 = btn_starty + 2 * (btn_sy + spc_y) + btn_sy;
-    button_build_cannon->onMouseDown = build_cannon_cb;
     button_build_cannon->set_offsets();
+    button_build_cannon->onMouseDown = build_cannon_cb;
     Map_UI->addWidget(button_build_cannon);
 
     SideButton *button_build_cannon_ammo = new SideButton("Ammo");
@@ -2017,8 +2352,8 @@ static void init_buttons(void) {
     button_build_cannon_ammo->m_y1 = btn_starty + 3 * (btn_sy + spc_y);
     button_build_cannon_ammo->m_x2 = btn_sx;
     button_build_cannon_ammo->m_y2 = btn_starty + 3 * (btn_sy + spc_y) + btn_sy;
-    button_build_cannon_ammo->onMouseDown = build_cannon_ammo_cb;
     button_build_cannon_ammo->set_offsets();
+    button_build_cannon_ammo->onMouseDown = build_cannon_ammo_cb;
     Map_UI->addWidget(button_build_cannon_ammo);
 
     SideButton *button_fire_cannon = new SideButton("Fire");
@@ -2026,8 +2361,8 @@ static void init_buttons(void) {
     button_fire_cannon->m_y1 = btn_starty + 4 * (btn_sy + spc_y);
     button_fire_cannon->m_x2 = btn_sx;
     button_fire_cannon->m_y2 = btn_starty + 4 * (btn_sy + spc_y) + btn_sy;
-    button_fire_cannon->onMouseDown = fire_cannon_cb;
     button_fire_cannon->set_offsets();
+    button_fire_cannon->onMouseDown = fire_cannon_cb;
     Map_UI->addWidget(button_fire_cannon);
 
     SideButton *button_build_armory = new SideButton("Armo");
@@ -2035,8 +2370,8 @@ static void init_buttons(void) {
     button_build_armory->m_y1 = btn_starty + 5 * (btn_sy + spc_y);
     button_build_armory->m_x2 = btn_sx;
     button_build_armory->m_y2 = btn_starty + 5 * (btn_sy + spc_y) + btn_sy;
-    button_build_armory->onMouseDown = build_armory_cb;
     button_build_armory->set_offsets();
+    button_build_armory->onMouseDown = build_armory_cb;
     Map_UI->addWidget(button_build_armory);
 
     SideButton *button_build_walker = new SideButton("Walk");
@@ -2044,8 +2379,8 @@ static void init_buttons(void) {
     button_build_walker->m_y1 = btn_starty + 6 * (btn_sy + spc_y);
     button_build_walker->m_x2 = btn_sx;
     button_build_walker->m_y2 = btn_starty + 6 * (btn_sy + spc_y) + btn_sy;
-    button_build_walker->onMouseDown = build_walker_cb;
     button_build_walker->set_offsets();
+    button_build_walker->onMouseDown = build_walker_cb;
     Map_UI->addWidget(button_build_walker);
 
     SideButton *button_build_carrier = new SideButton("Carr");
@@ -2053,16 +2388,137 @@ static void init_buttons(void) {
     button_build_carrier->m_y1 = btn_starty + 7 * (btn_sy + spc_y);
     button_build_carrier->m_x2 = btn_sx;
     button_build_carrier->m_y2 = btn_starty + 7 * (btn_sy + spc_y) + btn_sy;
-    button_build_carrier->onMouseDown = build_carrier_cb;
     button_build_carrier->set_offsets();
+    button_build_carrier->onMouseDown = build_carrier_cb;
     Map_UI->addWidget(button_build_carrier);
 
     opt_buttons = { button_build_harvester, button_destroy_harvester,
                     button_build_cannon, button_build_cannon_ammo,
                     button_fire_cannon, button_build_armory,
                     button_build_walker, button_build_carrier };
+
+    /*
+      Editor buttons
+     */
+    btn_startx = 0;
+    btn_starty = 0;
+    btn_sx = 60;
+    btn_sy = 40;
+    spc_y = 5;
+
+    SideButton *button_add_health = new SideButton("He +");
+    button_add_health->m_x1 = btn_startx;
+    button_add_health->m_y1 = btn_starty;
+    button_add_health->m_x2 = btn_sx;
+    button_add_health->m_y2 = btn_sy;
+    button_add_health->set_offsets();
+    button_add_health->onMouseDown = editor_add_health;
+    MapEditor_UI->addWidget(button_add_health);
+
+    SideButton *button_remove_health = new SideButton("He -");
+    button_remove_health->m_x1 = btn_startx;
+    button_remove_health->m_y1 = btn_starty + 1 * (btn_sy + spc_y);
+    button_remove_health->m_x2 = btn_sx;
+    button_remove_health->m_y2 = btn_starty + 1 * (btn_sy + spc_y) + btn_sy;
+    button_remove_health->set_offsets();
+    button_remove_health->onMouseDown = editor_remove_health;
+    MapEditor_UI->addWidget(button_remove_health);
+
+    SideButton *button_toggle_harvester = new SideButton("T H");
+    button_toggle_harvester->m_x1 = btn_startx;
+    button_toggle_harvester->m_y1 = btn_starty + 2 * (btn_sy + spc_y);
+    button_toggle_harvester->m_x2 = btn_sx;
+    button_toggle_harvester->m_y2 = btn_starty + 2 * (btn_sy + spc_y) + btn_sy;
+    button_toggle_harvester->set_offsets();
+    button_toggle_harvester->onMouseDown = editor_toggle_harvester_cb;
+    MapEditor_UI->addWidget(button_toggle_harvester);
+
+    SideButton *button_toggle_armory = new SideButton("T A");
+    button_toggle_armory->m_x1 = btn_startx;
+    button_toggle_armory->m_y1 = btn_starty + 3 * (btn_sy + spc_y);
+    button_toggle_armory->m_x2 = btn_sx;
+    button_toggle_armory->m_y2 = btn_starty + 3 * (btn_sy + spc_y) + btn_sy;
+    button_toggle_armory->set_offsets();
+    button_toggle_armory->onMouseDown = editor_toggle_armory_cb;
+    MapEditor_UI->addWidget(button_toggle_armory);
+
+    SideButton *button_toggle_cannon = new SideButton("T C");
+    button_toggle_cannon->m_x1 = btn_startx;
+    button_toggle_cannon->m_y1 = btn_starty + 4 * (btn_sy + spc_y);
+    button_toggle_cannon->m_x2 = btn_sx;
+    button_toggle_cannon->m_y2 = btn_starty + 4 * (btn_sy + spc_y) + btn_sy;
+    button_toggle_cannon->set_offsets();
+    button_toggle_cannon->onMouseDown = editor_toggle_cannon_cb;
+    MapEditor_UI->addWidget(button_toggle_cannon);
+
+    SideButton *button_toggle_cannon_ammo = new SideButton("T CA");
+    button_toggle_cannon_ammo->m_x1 = btn_startx;
+    button_toggle_cannon_ammo->m_y1 = btn_starty + 5 * (btn_sy + spc_y);
+    button_toggle_cannon_ammo->m_x2 = btn_sx;
+    button_toggle_cannon_ammo->m_y2 = btn_starty + 5 * (btn_sy + spc_y) + btn_sy;
+    button_toggle_cannon_ammo->set_offsets();
+    button_toggle_cannon_ammo->onMouseDown = editor_toggle_cannon_ammo_cb;
+    MapEditor_UI->addWidget(button_toggle_cannon_ammo);
+
+    SideButton *button_add_unit = new SideButton("U +");
+    button_add_unit->m_x1 = btn_startx;
+    button_add_unit->m_y1 = btn_starty + 6 * (btn_sy + spc_y);
+    button_add_unit->m_x2 = btn_sx;
+    button_add_unit->m_y2 = btn_starty + 6 * (btn_sy + spc_y) + btn_sy;
+    button_add_unit->set_offsets();
+    button_add_unit->onMouseDown = editor_add_unit_cb;
+    MapEditor_UI->addWidget(button_add_unit);
+
+    SideButton *button_remove_unit = new SideButton("U -");
+    button_remove_unit->m_x1 = btn_startx;
+    button_remove_unit->m_y1 = btn_starty + 7 * (btn_sy + spc_y);
+    button_remove_unit->m_x2 = btn_sx;
+    button_remove_unit->m_y2 = btn_starty + 7 * (btn_sy + spc_y) + btn_sy;
+    button_remove_unit->set_offsets();
+    button_remove_unit->onMouseDown = editor_remove_unit_cb;
+    MapEditor_UI->addWidget(button_remove_unit);
+
+    btn_startx = 65;
+    btn_sx = 125;
+
+    SideButton *button_paint_neutral = new SideButton("Neu");
+    button_paint_neutral->m_x1 = btn_startx;
+    button_paint_neutral->m_y1 = btn_starty + 0 * (btn_sy + spc_y);
+    button_paint_neutral->m_x2 = btn_sx;
+    button_paint_neutral->m_y2 = btn_starty + 0 * (btn_sy + spc_y) + btn_sy;
+    button_paint_neutral->set_offsets();
+    button_paint_neutral->onMouseDown = editor_paint_neutral_cb;
+    MapEditor_UI->addWidget(button_paint_neutral);
+
+    SideButton *button_paint_red = new SideButton("Red");
+    button_paint_red->m_x1 = btn_startx;
+    button_paint_red->m_y1 = btn_starty + 1 * (btn_sy + spc_y);
+    button_paint_red->m_x2 = btn_sx;
+    button_paint_red->m_y2 = btn_starty + 1 * (btn_sy + spc_y) + btn_sy;
+    button_paint_red->set_offsets();
+    button_paint_red->onMouseDown = editor_paint_red_cb;
+    MapEditor_UI->addWidget(button_paint_red);
+
+    SideButton *button_paint_blue = new SideButton("Blu");
+    button_paint_blue->m_x1 = btn_startx;
+    button_paint_blue->m_y1 = btn_starty + 2 * (btn_sy + spc_y);
+    button_paint_blue->m_x2 = btn_sx;
+    button_paint_blue->m_y2 = btn_starty + 2 * (btn_sy + spc_y) + btn_sy;
+    button_paint_blue->set_offsets();
+    button_paint_blue->onMouseDown = editor_paint_blue_cb;
+    MapEditor_UI->addWidget(button_paint_blue);
+
+    SideButton *button_save_map = new SideButton("Save");
+    button_save_map->m_x1 = display_x - 70;
+    button_save_map->m_y1 = display_y - 50;
+    button_save_map->m_x2 = display_x;
+    button_save_map->m_y2 = display_y;
+    button_save_map->set_offsets();
+    button_save_map->onMouseDown = editor_save_map_cb;
+    MapEditor_UI->addWidget(button_save_map);
 }
 
+__attribute__ ((unused))
 static void gen_map(int seed) {
     int i = 0;
     bool red = false;
@@ -2104,7 +2560,7 @@ static void init(void) {
     Map_UI = NULL;
 }
 
-static void new_game() {
+static void new_game(GameType t) {
     game = new Game;
     game->players[0]->m_ai_control = false;
 
@@ -2114,23 +2570,11 @@ static void new_game() {
 
     map = new HexMap;
     Map_UI = new MapUI;
+    MapEditor_UI = new MapEditorUI;
     Map_UI->clear_to = color_black;
 
     const char *map_name = GameSetup_UI->m_selected_map->m_name;
-    int seed = 0;
-
-    if(strcmp(map_name, "Europe") == 0) { seed = 1; }
-    else if(strcmp(map_name, "North America") == 0) { seed = 2; }
-    else if(strcmp(map_name, "Euroasia") == 0) { seed = 3; }
-    else if(strcmp(map_name, "Australia") == 0) { seed = 4; }
-    else if(strcmp(map_name, "Indochina") == 0) { seed = 5; }
-    else if(strcmp(map_name, "Siberia") == 0) { seed = 6; }
-    else if(strcmp(map_name, "Pacific Domains") == 0) { seed = 7; }
-    else if(strcmp(map_name, "Africa") == 0) { seed = 8; }
-    else if(strcmp(map_name, "South America") == 0) { seed = 9; }
-
-    gen_map(seed);
-    map->gen_neighbors();
+    debug("Map name %s selected", map_name);
 
     init_buttons();
 
@@ -2148,7 +2592,28 @@ static void new_game() {
     msg->add("It's %s's turn", game->controller()->m_name);
 
     Map_UI->addWidget(msg);
-    ui = Map_UI;
+
+    if(t == GameType::Game) {
+        ui = Map_UI;
+    } else {
+        ui = MapEditor_UI;
+    }
+
+    if(ui == MapEditor_UI) {
+        int i = 0;
+        for(int y = 0; y < 7; y++) {
+            for(int x = 1; x < 12; x++) {
+                addHex(x, y, 50, 0, i++);
+            }
+        }
+        for(auto&& h : map->m_hexes) MapEditor_UI->addWidget(h);
+    }
+    else if(ui == Map_UI) {
+        ifstream in(string("maps/") + map_name, ios::in);
+        map->load(in, true);
+        for(auto&& h : map->m_hexes) Map_UI->addWidget(h);
+    }
+    map->gen_neighbors();
 }
 
 static void delete_game(void) {
@@ -2157,6 +2622,7 @@ static void delete_game(void) {
 
     delete map;
     delete Map_UI;
+    delete MapEditor_UI;
     delete game;
     Map_UI = NULL;
 }
@@ -2186,7 +2652,7 @@ static void pressEsc(void) {
     if(ui == MainMenu_UI && Map_UI != NULL) {
         ui = Map_UI;
     }
-    else if(ui == Map_UI or ui == GameSetup_UI) {
+    else if(ui == Map_UI or ui == GameSetup_UI or ui == MapEditor_UI) {
         ui = MainMenu_UI;
     }
 }
