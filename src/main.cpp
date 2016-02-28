@@ -48,6 +48,7 @@ ALLEGRO_EVENT_QUEUE *event_queue;
 ALLEGRO_TIMER *timer;
 ALLEGRO_FONT *g_font;
 
+constexpr int font_height = 16;
 bool running;
 float mouse_x;
 float mouse_y;
@@ -74,10 +75,10 @@ SideInfo *sideinfo2;
 static bool (*global_key_callback)(void) = NULL;
 
 inline float vx(float x) {
-    return round((x - view_x) * scale);
+    return (x - view_x) * scale;
 }
 inline float vy(float y) {
-    return round((y - view_y) * scale);
+    return (y - view_y) * scale;
 }
 
 enum class GameType {
@@ -139,8 +140,6 @@ ALLEGRO_COLOR color_light_blue;
 ALLEGRO_COLOR color_black;
 ALLEGRO_COLOR color_white;
 ALLEGRO_COLOR color_grey_middle;
-
-static inline void draw_hex(float x, float y, float a, float zrot, float cr, float cg, float cb, float r, float d);
 
 static void init_colors(void) {
     color_very_red    = al_map_rgb(255, 0, 0);
@@ -247,9 +246,9 @@ void MessageLog::draw(void) {
     const char *txt = m_lines.back().c_str();
     const float txtlen = al_get_text_width(g_font, txt);
 
-    al_draw_filled_rectangle(0, display_y - 25, txtlen + 10, display_y, color_black);
+    al_draw_filled_rectangle(0, display_y - font_height - 10, txtlen + 10, display_y, color_black);
 
-    al_draw_text(g_font, color_white, 5, display_y - 20, 0, txt);
+    al_draw_text(g_font, color_white, 5, display_y - font_height - 5, 0, txt);
 }
 
 void MessageLog::add(const char *format_string, ...) {
@@ -318,7 +317,7 @@ struct Button : Widget {
 
     void set_offsets(void) {
         m_x_off = round((m_x2 - m_x1 - al_get_text_width(g_font, m_name)) / 2);
-        m_y_off = round((m_y2 - m_y1 - 14) / 2);
+        m_y_off = round((m_y2 - m_y1 - font_height) / 2);
     }
 };
 
@@ -357,7 +356,7 @@ struct SideButton : Widget {
     }
     void set_offsets(void) {
         m_x_off = round((m_x2 - m_x1 - al_get_text_width(g_font, m_name)) / 2);
-        m_y_off = round((m_y2 - m_y1 - 14) / 2);
+        m_y_off = round((m_y2 - m_y1 - font_height) / 2);
     }
 };
 
@@ -442,6 +441,13 @@ struct HexMap {
     vector<Hex *> neighbors(Hex *base);
     bool is_neighbor(Hex *h1, Hex *h2);
     void harvest(void);
+    void build_harvester(Hex *h);
+    void destroy_harvester(Hex *h);
+    void build_cannon(Hex *h);
+    void build_armory(Hex *h);
+    void add_cannon_ammo(Hex *h);
+    void fire_cannon(Hex *from, Hex *to);
+    bool cannon_in_range(Hex *from, Hex *to);
     void move_or_attack(Hex *attacker, Hex *defender);
     void free_units(void);
     Hex *get_active_hex(void);
@@ -525,11 +531,12 @@ struct SideInfo : Widget {
         char tmp[10];
         snprintf(tmp, sizeof(tmp), "%d/%d", m_s->m_resources, m_s->m_carriers);
         m_x_off = round((m_x2 - m_x1 - al_get_text_width(g_font, tmp)) / 2);
-        m_y_off = round((m_y2 - m_y1 - 14) / 2);
+        m_y_off = round((m_y2 - m_y1 - font_height) / 2);
     }
 };
 
 static bool marked_hexes(void);
+static inline void draw_hex(float x, float y, float a, float zrot, float cr, float cg, float cb, float r, float d);
 
 struct Hex : Widget {
     int m_index;
@@ -545,8 +552,8 @@ struct Hex : Widget {
     bool m_harvested;
     bool m_contains_armory;
     bool m_contains_cannon;
-    int m_ammo;
-    int m_loaded_ammo;
+    bool m_ammo;
+    bool m_loaded_ammo;
 
     int m_units_free;
     int m_units_moved;
@@ -580,11 +587,11 @@ struct Hex : Widget {
         m_index = index;
 
         // radius of inscribed circle
-        float r = round(0.5 * sqrt(3) * a);
+        float r = 0.5 * sqrt(3) * a;
 
-        m_x1 = round(x1);
-        m_y1 = round(y1);
-        m_a = round(a);
+        m_x1 = x1;
+        m_y1 = y1;
+        m_a = a;
         m_r = r;
         m_cx = m_x1 + r;
         m_cy = m_y1 + r;
@@ -629,46 +636,70 @@ struct Hex : Widget {
         }
     }
 
+    inline void draw_text(float x, float y, ALLEGRO_COLOR& txt_color) {
+        al_draw_textf(g_font,
+                      txt_color,
+                      x - 5,
+                      y - 7,
+                      0,
+                      "%d", m_level);
+
+        if(m_contains_harvester == true)
+            al_draw_text(g_font, txt_color,
+                         x - 25, y - 25,
+                         0, "H");
+
+        if(m_contains_armory == true)
+            al_draw_text(g_font, txt_color,
+                         x - 5, y - 25,
+                         0, "A");
+
+        if(m_contains_cannon == true)
+            al_draw_text(g_font, txt_color,
+                         x + 15, y - 25,
+                         0, "C");
+
+        if(m_ammo or m_loaded_ammo)
+            al_draw_text(g_font, txt_color,
+                         x + 15, y - 7,
+                          0, "1");
+
+        if(m_units_free > 0 or m_units_moved > 0)
+            al_draw_textf(g_font, txt_color,
+                          x - 12, y + 10,
+                          0, "%d/%d", m_units_free, m_units_moved);
+    }
+
     void draw(void) override {
         if(m_level == -1) return;
 
-        float r = 0.5;
-        float g = 0.5;
-        float b = 0.5;
+        float r, g, b;
 
         if(m_side == Side::Red) {
-            if(m_active == true) {
-                r = 0.98;
-                g = 0.2;
-                b = 0.2;
-            }
-            else {
-                r = 0.94;
-                g = 0.5;
-                b = 0.5;
-            }
+            if(m_active == true) { r = 0.98; g = 0.2; b = 0.2; }
+            else { r = 0.94; g = 0.5; b = 0.5; }
         }
         else if(m_side == Side::Blue) {
-            if(m_active == true) {
-                r = 0.2;
-                g = 0.2;
-                b = 0.98;
-            }
-            else {
-                r = 0.5;
-                g = 0.5;
-                b = 0.94;
-            }
+            if(m_active == true) { r = 0.2; g = 0.2; b = 0.98; }
+            else { r = 0.5; g = 0.5; b = 0.94; }
+        }
+        else {
+            r = 0.5; g = 0.5; b = 0.5;
         }
 
         ALLEGRO_COLOR txt_color = color_white;
 
+        const float x = vx(m_cx);
+        const float y = vy(m_cy);
+        constexpr float sin12 = sin(1.0f / 2.0f);
+        constexpr float sqrt3 = sqrt(3);
+
         if(m_marked == true) {
             const float space = 2;
-            draw_hex(vx(m_cx), vy(m_cy),
+            draw_hex(x, y,
                      scale * (m_a - space), 0, 1, 1, 1,
-                     0.5 * sqrt(3) * (m_a - space) * scale,
-                     sin(1.0 / 2.0) * (m_a - space) * scale);
+                     0.5 * sqrt3 * (m_a - space) * scale,
+                     sin12 * (m_a - space) * scale);
         }
         else if(m_active == false and marked_hexes() == true) {
             r /= 3;
@@ -679,59 +710,26 @@ struct Hex : Widget {
 
         const float space = 4;
 
-        draw_hex(vx(m_cx), vy(m_cy), scale * (m_a - space), 0, r, g, b,
-                 0.5 * sqrt(3) * (m_a - space) * scale,
-                 sin(1.0 / 2.0) * (m_a - space) * scale);
+        draw_hex(x, y, scale * (m_a - space), 0, r, g, b,
+                 0.5 * sqrt3 * (m_a - space) * scale,
+                 sin12 * (m_a - space) * scale);
 
         if(m_level == 0) return;
 
-        al_draw_textf(g_font,
-                      txt_color,
-                      vx(m_cx) - 5,
-                      vy(m_cy) - 7,
-                      0,
-                      "%d", m_level);
-
-        if(m_contains_harvester == true)
-            al_draw_text(g_font, txt_color,
-                         vx(m_cx) - 25, vy(m_cy) - 25,
-                         0, "H");
-
-        if(m_contains_armory == true)
-            al_draw_text(g_font, txt_color,
-                         vx(m_cx) - 5, vy(m_cy) - 25,
-                         0, "A");
-
-        if(m_contains_cannon == true)
-            al_draw_text(g_font, txt_color,
-                         vx(m_cx) + 15, vy(m_cy) - 25,
-                         0, "C");
-
-        if(m_ammo > 0 or m_loaded_ammo > 0)
-            al_draw_textf(g_font, txt_color,
-                         vx(m_cx) + 15, vy(m_cy) - 7,
-                          0, "%d", m_ammo + m_loaded_ammo);
-
-        if(m_units_free > 0 or m_units_moved > 0)
-            al_draw_textf(g_font, txt_color,
-                          vx(m_cx) - 12, vy(m_cy) + 10,
-                          0, "%d/%d", m_units_free, m_units_moved);
+        draw_text(x, y, txt_color);
     }
 
     void draw_editor(void) {
-        float r = 0.5;
-        float g = 0.5;
-        float b = 0.5;
+        float r, g, b;
 
         if(m_side == Side::Red) {
-            r = 0.94;
-            g = 0.5;
-            b = 0.5;
+            r = 0.94; g = 0.5; b = 0.5;
         }
         else if(m_side == Side::Blue) {
-                r = 0.5;
-                g = 0.5;
-                b = 0.94;
+            r = 0.5; g = 0.5; b = 0.94;
+        }
+        else {
+            r = 0.5; g = 0.5; b = 0.5;
         }
 
         if(m_level <= 0) {
@@ -740,45 +738,20 @@ struct Hex : Widget {
             b /= 3;
         }
 
+        const int x = vx(m_cx);
+        const int y = vy(m_cy);
+        constexpr float sin12 = sin(1.0f / 2.0f);
+        constexpr float sqrt3 = sqrt(3);
+
         ALLEGRO_COLOR txt_color = color_white;
 
         const float space = 4;
 
-        draw_hex(vx(m_cx), vy(m_cy), scale * (m_a - space), 0, r, g, b,
-                 0.5 * sqrt(3) * (m_a - space) * scale,
-                 sin(1.0 / 2.0) * (m_a - space) * scale);
+        draw_hex(x, y, scale * (m_a - space), 0, r, g, b,
+                 0.5 * sqrt3 * (m_a - space) * scale,
+                 sin12 * (m_a - space) * scale);
 
-        al_draw_textf(g_font,
-                      txt_color,
-                      vx(m_cx) - 5,
-                      vy(m_cy) - 7,
-                      0,
-                      "%d", m_level);
-
-        if(m_contains_harvester == true)
-            al_draw_text(g_font, txt_color,
-                         vx(m_cx) - 25, vy(m_cy) - 25,
-                         0, "H");
-
-        if(m_contains_armory == true)
-            al_draw_text(g_font, txt_color,
-                         vx(m_cx) - 5, vy(m_cy) - 25,
-                         0, "A");
-
-        if(m_contains_cannon == true)
-            al_draw_text(g_font, txt_color,
-                         vx(m_cx) + 15, vy(m_cy) - 25,
-                         0, "C");
-
-        if(m_ammo > 0 or m_loaded_ammo > 0)
-            al_draw_textf(g_font, txt_color,
-                         vx(m_cx) + 15, vy(m_cy) - 7,
-                          0, "%d", m_ammo + m_loaded_ammo);
-
-        if(m_units_free > 0 or m_units_moved > 0)
-            al_draw_textf(g_font, txt_color,
-                          vx(m_cx) - 12, vy(m_cy) + 10,
-                          0, "%d/%d", m_units_free, m_units_moved);
+        draw_text(x, y, txt_color);
     }
 
     void mouseDownEvent(void) override {
@@ -837,7 +810,7 @@ vector<AIAction> SideController::do_AI(void) {
     }
 
     map->undo();
-    debug("number of ai actions: %d", ret.size());
+    debug("SideController::do_AI(): number of ai actions: %d", ret.size());
     return ret;
 }
 
@@ -902,6 +875,10 @@ public:
     bool ai_replay(void);
 
     void mark(vector<Hex *> hs) {
+        if(hs.empty() == true) {
+            m_marked_hexes = false;
+            return;
+        }
         for(auto&& h : hs)
             if(h->alive())
                 h->m_marked = true;
@@ -974,8 +951,9 @@ void MapEditorUI::mouseDownEvent(void) {
         msg->hide();
         set_current_action(MapEditorAction::AddHealth);
         clear_active_hex();
+    } else {
+        UI::mouseDownEvent();
     }
-    UI::mouseDownEvent();
 }
 
 void MapEditorUI::MapHexSelected(Hex *h) {
@@ -995,8 +973,7 @@ void MapEditorUI::MapHexSelected(Hex *h) {
         h->m_contains_armory = not h->m_contains_armory;
     }
     else if(get_current_action() == MapEditorAction::ToggleCannonAmmo) {
-        if(h->m_ammo < 1) { h->m_ammo = 1; }
-        else { h->m_ammo = 0; }
+        h->m_ammo = not h->m_ammo;
     }
     else if(get_current_action() == MapEditorAction::AddUnit) {
         h->m_units_free += 1;
@@ -1014,6 +991,8 @@ void MapEditorUI::MapHexSelected(Hex *h) {
     }
     else if(get_current_action() == MapEditorAction::PaintBlue) {
         h->m_side = Side::Blue;
+    } else {
+        fatal_error("MapEditorUI::MapHexSelected(): Unknown map editor action");
     }
 }
 
@@ -1038,12 +1017,20 @@ bool MapUI::ai_replay(void) {
 
     AIAction a = m_ai_acts[m_ai_acts_stage];
 
+    /* should these have checks? */
     if(a.m_act == MapAction::MovingUnits) {
         map->m_moving_units = a.m_amount;
         map->move_or_attack(a.m_src, a.m_dst);
     }
+    else if(a.m_act == MapAction::BuildHarvester) {
+        map->build_harvester(a.m_src);
+        game->controller_pay(10);
+    }
+    else if(a.m_act == MapAction::DestroyHarvester) {
+        map->destroy_harvester(a.m_src);
+    }
     else {
-        fatal_error("not implemented yet");
+        fatal_error("MapUI::ai_replay(): not implemented yet");
     }
 
     m_ai_acts_stage++;
@@ -1060,7 +1047,7 @@ struct MainMenuUI : UI {
     }
     void draw(void) override;
     void update(void) override {
-        m_rot += 1;
+        m_rot += dt * 30;
     }
 
     void handlePress(const char *name);
@@ -1095,14 +1082,14 @@ GameSetupUI::GameSetupUI() {
         struct dirent *epdf;
         while ((epdf = readdir(dpdf))) {
             string filename = string(epdf->d_name);
-            if(filename.size() < suffix.size())
+            if(filename.size() <= suffix.size())
                 continue;
             if(filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) == 0) {
                 map_filenames.push_back(filename);
             }
         }
     } else {
-        fatal_error("Couldn't open ./maps: ", strerror(errno));
+        fatal_error("GameSetupUI::GameSetupUI(): Couldn't open ./maps: ", strerror(errno));
     }
 
     Button *btn_begin = new Button("Begin");
@@ -1146,16 +1133,16 @@ GameSetupUI::GameSetupUI() {
     m_selected_map = btn;
 
     y = 150;
-    Button *btn_blue_player_ai = new Button("vs. A.I.");
-    int xsize = 10 + al_get_text_width(g_font, "vs. A.I.");
+    Button *btn_blue_player_ai = new Button("Blue.AI");
+    int xsize = 10 + al_get_text_width(g_font, "Blue.AI");
     btn_blue_player_ai->setpos(display_x - 200 - xsize,  y,
                                display_x - 200, y + 30);
     btn_blue_player_ai->onMouseDown = btn_player_select_cb;
     btn_blue_player_ai->set_offsets();
     addWidget(btn_blue_player_ai);
 
-    Button *btn_blue_player_human = new Button("vs. Human");
-    xsize = 10 + al_get_text_width(g_font, "vs. Human");
+    Button *btn_blue_player_human = new Button("Blue.human");
+    xsize = 10 + al_get_text_width(g_font, "Blue.human");
     btn_blue_player_human->setpos(display_x - 200 - xsize, y + 35,
                                   display_x - 200, y + 65);
     btn_blue_player_human->onMouseDown = btn_player_select_cb;
@@ -1209,7 +1196,8 @@ static void btn_editor_cb(void) {
 }
 
 static inline void draw_hex(float x, float y, float a, float zrot, float cr, float cg, float cb, float r, float d) {
-    glLoadIdentity();
+    glPushMatrix();
+
     glTranslatef(x, y, 0);
     glRotatef(zrot, 0, 0, 1);
 
@@ -1222,45 +1210,14 @@ static inline void draw_hex(float x, float y, float a, float zrot, float cr, flo
     glVertex3f(-a/2, r, 0);
     glVertex3f(-a/2 - d, 0, 0);
     glEnd();
+
+    glPopMatrix();
 }
 
 void MainMenuUI::draw(void) {
-    glPushMatrix();
-    glEnable(GL_DEPTH_TEST);
-    glViewport(0, 0, display_x, display_y);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0, display_x, display_y, 0, -200, 200);
-    glClearColor(0,0,0,1);
-
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glMatrixMode(GL_MODELVIEW);
-
     draw_hex(display_x/2, display_y/2, 150, m_rot, 0.8, 0.2, 0.2, 0.5*sqrt(3)*150, 150*sin(1.0/2.0));
     draw_hex(display_x/2, display_y/2, 100, -m_rot, 0.2, 0.2, 0.8, 0.5*sqrt(3)*100, 100*sin(1.0/2.0));
 
-    // glLoadIdentity();
-    // glTranslatef(display_x/2, display_y/2, 0);
-    // glRotatef(rot, 0, 0, 1);
-
-    // glBegin(GL_POLYGON);
-    // glColor3f(0.5, 0, 0);
-    // glVertex3f(-a/2, - 0.5 * sqrt(3) * a, 0);
-    // glVertex3f(a/2, - 0.5 * sqrt(3) * a, 0);
-    // glVertex3f(a * sin(1.0/2.0) + a/2, 0, 0);
-    // glVertex3f(a/2, 0.5 * sqrt(3) * a, 0);
-    // glVertex3f(-a/2, 0.5 * sqrt(3) * a, 0);
-    // glVertex3f(-a/2 - a * sin(1.0/2.0), 0, 0);
-    // // glVertex3f(-100, -100, 0);
-    // // glVertex3f(100, -100, 0);
-    // // glVertex3f(100, 100, 0);
-    // // glVertex3f(-100, 100, 0);
-    // glEnd();
-
-    glFlush();
-    glPopMatrix();
-
-    //al_draw_circle(display_x/2, display_y/2, 0.5 * sqrt(3) * a - 2, color_white, 3);
     UI::draw();
 }
 
@@ -1283,7 +1240,7 @@ struct MenuEntry : public Widget {
 
     void set_offsets(void) {
         m_x_off = round((m_x2 - m_x1 - al_get_text_width(g_font, m_name)) / 2);
-        m_y_off = round((m_y2 - m_y1 - 14) / 2);
+        m_y_off = round((m_y2 - m_y1 - font_height) / 2);
     }
 };
 
@@ -1338,8 +1295,9 @@ void MapUI::mouseDownEvent(void) {
         msg->hide();
         set_current_action(MapAction::MovingUnits);
         clear_active_hex();
+    } else {
+        UI::mouseDownEvent();
     }
-    UI::mouseDownEvent();
 }
 
 void Widget::init(void) {
@@ -1412,10 +1370,10 @@ bool UI::is_hit(Widget *widget) {
 void UI::mouseDownEvent(void) {
     if(mouse_button == 1) {
         for(auto& widget : widgets) {
-            bool hit = is_hit(widget);
+            bool hit = (not widget->m_visible) || is_hit(widget);
 
             if(hit == true) {
-                debug("hit!");
+                debug("UI::mouseDownEvent(): hit!");
                 widget->mouseDownEvent();
                 if(widget->onMouseDown != nullptr) {
                     widget->onMouseDown();
@@ -1455,6 +1413,47 @@ void UI::draw(void) {
     }
 }
 
+void HexMap::build_harvester(Hex *h) {
+    h->m_contains_harvester = true;
+}
+
+void HexMap::destroy_harvester(Hex *h) {
+    for(auto&& n : map->neighbors(h)) {
+        if(n->alive() == true) {
+            n->harvest();
+        }
+    }
+    h->harvest();
+    h->m_contains_harvester = false;
+}
+
+void HexMap::build_cannon(Hex *h) {
+    assert(h->m_contains_cannon == false);
+    h->m_contains_cannon = true;
+}
+
+void HexMap::build_armory(Hex *h) {
+    assert(h->m_contains_armory == false);
+    h->m_contains_armory = true;
+}
+
+void HexMap::add_cannon_ammo(Hex *h) {
+    assert(h->m_ammo == false && h->m_loaded_ammo == false);
+    h->m_loaded_ammo = true;
+}
+
+void HexMap::fire_cannon(Hex *from, Hex *to) {
+    from->m_ammo = false;
+    to->m_level -= 1;
+    to->destroy_units(8);
+}
+
+bool HexMap::cannon_in_range(Hex *from, Hex *to) {
+    float dist = map->hex_distance(from, to);
+
+    return dist < (0.4 + 2 * m_cannon_min_range) * from->m_circle_bb_radius or dist > (0.4 + 2 * m_cannon_max_range) * from->m_circle_bb_radius;
+}
+
 void HexMap::save(ostream &os) {
     os << m_hexes.size() << '\n';
     for(auto&& h : m_hexes) {
@@ -1470,8 +1469,8 @@ void HexMap::load(istream &is, bool prune) {
 
     // try to make sure allocated hexes aren't fragmented
     int j = 0;
+    Hex tmp;
     for(int i = 0; i < size; i++) {
-        Hex tmp;
         tmp.load(is);
         if(tmp.m_level >= 1 || prune == false) {
             tmp.InitWidget();
@@ -1535,7 +1534,7 @@ void HexMap::undo(void) {
     SideController &old_cont = m_old_states.back().m_sc;
     vector<Hex> old_hexes = m_old_states.back().m_hexes;
 
-    debug("undo to %p", old_hexes);
+    debug("HexMap::undo(): undo to %p", old_hexes);
     msg->add("Undo!");
 
     assert(old_hexes.size() == m_hexes.size());
@@ -1648,7 +1647,7 @@ void HexMap::move_or_attack(Hex *attacker, Hex *defender) {
         defender->m_units_moved += moved;
         defender->m_side = attacker->m_side;
         attacker->m_units_free -= moved;
-        debug("%p moves %d to %p", defender, moved, attacker);
+        debug("HexMap::move_or_attack(): %p moves %d to %p", defender, moved, attacker);
     }
     else {
         // attacking
@@ -1659,7 +1658,7 @@ void HexMap::move_or_attack(Hex *attacker, Hex *defender) {
                     m_max_units_moved
                });
 
-        debug("%p attacked %p with %d", defender, attacker, moved);
+        debug("HexMap::move_or_attack(): %p attacked %p with %d", defender, attacker, moved);
         if(moved >= defender->m_units_free + defender->m_units_moved) {
             // we've conquered this hex
             defender->m_units_moved = moved - (defender->m_units_free + defender->m_units_moved);
@@ -1688,8 +1687,10 @@ void HexMap::free_units(void) {
             h->m_units_moved = 0;
 
             // transfer cannon ammo
-            h->m_ammo += h->m_loaded_ammo;
-            h->m_loaded_ammo = 0;
+            if(h->m_loaded_ammo) {
+                h->m_ammo = true;
+            }
+            h->m_loaded_ammo = false;
         }
     }
 }
@@ -1761,16 +1762,14 @@ void MapUI::MapHexSelected(Hex *h) {
             return;
         }
 
-        float dist = map->hex_distance(prev, h);
-
-        if(dist < (0.4 + 2 * map->m_cannon_min_range) * prev->m_circle_bb_radius or dist > (0.4 + 2 * map->m_cannon_max_range) * prev->m_circle_bb_radius) {
+        if(map->cannon_in_range(prev, h) == false) {
             set_current_action(MapAction::MovingUnits);
             clear_active_hex();
             msg->add("Target isn't in range.");
             return;
         }
 
-        if(prev->m_ammo <= 0) {
+        if(prev->m_ammo == false) {
             set_current_action(MapAction::MovingUnits);
             clear_active_hex();
             msg->add("That cannon doesn't have any loaded ammo.");
@@ -1779,9 +1778,7 @@ void MapUI::MapHexSelected(Hex *h) {
 
         msg->add("Firing!");
         map->store_current_state();
-        prev->m_ammo -= 1;
-        h->m_level -= 1;
-        h->destroy_units(8);
+        map->fire_cannon(prev, h);
         clear_active_hex();
         set_current_action(MapAction::MovingUnits);
     }
@@ -1790,7 +1787,7 @@ void MapUI::MapHexSelected(Hex *h) {
         if(h->m_contains_harvester == false) {
             map->store_current_state();
             game->controller_pay(10);
-            h->m_contains_harvester = true;
+            map->build_harvester(h);
         }
 
         clear_active_hex();
@@ -1799,28 +1796,21 @@ void MapUI::MapHexSelected(Hex *h) {
     else if(get_current_action() == MapAction::DestroyHarvester) {
         if(h->m_contains_harvester == true) {
             map->store_current_state();
-            for(auto&& n : map->neighbors(h)) {
-                if(n->alive() == true) {
-                    n->harvest();
-                }
-            }
-            h->harvest();
-            h->m_contains_harvester = false;
+            map->destroy_harvester(h);
         }
         clear_active_hex();
         set_current_action(MapAction::MovingUnits);
     }
     else if(get_current_action() == MapAction::AddAmmoToCannon) {
-        // if(prev == NULL) {
-        //     set_current_action(MapAction::MovingUnits);
-        //     clear_active_hex();
-        //     return;
-        // }
-        if(h->m_contains_cannon == true) {
-            map->store_current_state();
-            game->controller_pay(20);
-            h->m_loaded_ammo++;
-        }
+
+        if(h->m_contains_cannon == true &&
+           h->m_ammo == false &&
+           h->m_loaded_ammo == false)
+            {
+                map->store_current_state();
+                game->controller_pay(20);
+                map->add_cannon_ammo(h);
+            }
         clear_active_hex();
         set_current_action(MapAction::MovingUnits);
     }
@@ -1828,7 +1818,7 @@ void MapUI::MapHexSelected(Hex *h) {
         if(h->m_contains_armory == false) {
             map->store_current_state();
             game->controller_pay(35);
-            h->m_contains_armory = true;
+            map->build_armory(h);
         }
         clear_active_hex();
         set_current_action(MapAction::MovingUnits);
@@ -1837,7 +1827,7 @@ void MapUI::MapHexSelected(Hex *h) {
         if(h->m_contains_cannon == false) {
             map->store_current_state();
             game->controller_pay(30);
-            h->m_contains_cannon = true;
+            map->build_cannon(h);
         }
         clear_active_hex();
         set_current_action(MapAction::MovingUnits);
@@ -1984,7 +1974,7 @@ static void allegro_init() {
     else
         info("Initialized allegro addon: ttf.");
 
-    g_font = al_load_font("DejaVuSans-Bold.ttf", 14, 0);
+    g_font = al_load_font("DejaVuSans-Bold.ttf", font_height, 0);
     if(g_font == NULL)
         fatal_error("failed to load font");
     else
@@ -2123,6 +2113,14 @@ static void destroy_harvester_cb(void) {
         if(h->alive() && h->m_side == game->controller()->m_side &&
            h->m_contains_harvester == true)
             mark.push_back(h);
+
+    if(mark.empty() == true) {
+        msg->add("You don't have any harvesters.");
+        clear_opt_buttons();
+        return;
+    }
+
+    msg->add("Select harvester to destroy.");
     Map_UI->mark(mark);
 
     Map_UI->set_current_action(MapAction::DestroyHarvester);
@@ -2159,20 +2157,28 @@ static void build_carrier_cb(void) {
     }
 }
 static void build_walker_cb(void) {
+    vector<Hex *> mark;
+    for(auto&& h : map->m_hexes)
+        if(h->alive() && h->m_side == game->controller()->m_side &&
+           h->m_contains_armory == true)
+            mark.push_back(h);
+
+    if(mark.empty() == true) {
+        msg->add("You don't have any armories.");
+        clear_opt_buttons();
+        return;
+    }
+
     if(game->controller_has_resources(8)) {
         clear_active_hex();
 
-        vector<Hex *> mark;
-        for(auto&& h : map->m_hexes)
-            if(h->alive() && h->m_side == game->controller()->m_side &&
-               h->m_contains_armory == true)
-                mark.push_back(h);
         Map_UI->mark(mark);
 
-        msg->add("Select hex to build on.");
+        msg->add("Select hex to recruit on. (max: %d)",
+                 int(floor(float(game->controller_resources()) / 8.0)));
         Map_UI->set_current_action(MapAction::BuildWalker);
     } else {
-        msg->add("Insufficient resources (min 8)");
+        msg->add("Insufficient resources (min: 8)");
         clear_opt_buttons();
     }
 }
@@ -2181,10 +2187,13 @@ static void build_cannon_cb(void) {
         clear_active_hex();
 
         vector<Hex *> mark;
-        for(auto&& h : map->m_hexes)
+        for(auto&& h : map->m_hexes) {
             if(h->alive() && h->m_side == game->controller()->m_side &&
-               h->m_contains_cannon == false)
+               h->m_contains_cannon == false) {
                 mark.push_back(h);
+            }
+        }
+
         Map_UI->mark(mark);
 
         msg->add("Select hex to build on.");
@@ -2195,14 +2204,23 @@ static void build_cannon_cb(void) {
     }
 }
 static void build_cannon_ammo_cb(void) {
+    vector<Hex *> mark;
+    for(auto&& h : map->m_hexes) {
+        if(h->alive() && h->m_side == game->controller()->m_side &&
+           h->m_contains_cannon == true && h->m_ammo == false && h->m_loaded_ammo == false) {
+            mark.push_back(h);
+        }
+    }
+
+    if(mark.size() == 0) {
+        msg->add("You don't have any cannons to load.");
+        clear_opt_buttons();
+        return;
+    }
+
     if(game->controller_has_resources(20)) {
         clear_active_hex();
 
-        vector<Hex *> mark;
-        for(auto&& h : map->m_hexes)
-            if(h->alive() && h->m_side == game->controller()->m_side &&
-               h->m_contains_cannon == true)
-                mark.push_back(h);
         Map_UI->mark(mark);
 
         msg->add("Select cannon to add ammo to.");
@@ -2233,7 +2251,7 @@ static void fire_cannon_cb(void) {
         return;
     }
     if(act->m_side != get_current_side()) {
-        fatal_error("oy! that's not your cannon!");
+        fatal_error("fire_cannon_cb(): oy! that's not your cannon!");
     }
 
     Map_UI->clear_mark();
@@ -2255,41 +2273,53 @@ static void map_undo_cb(void) {
 
 void editor_add_health(void) {
     MapEditor_UI->set_current_action(MapEditorAction::AddHealth);
+    msg->add("Action: add health.");
 }
 void editor_remove_health(void) {
     MapEditor_UI->set_current_action(MapEditorAction::RemoveHealth);
+    msg->add("Action: remove health.");
 }
 void editor_toggle_harvester_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::ToggleHarvester);
+    msg->add("Action: toggle harvester.");
 }
 void editor_toggle_armory_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::ToggleArmory);
+    msg->add("Action: toggle armory.");
 }
 void editor_toggle_cannon_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::ToggleCannon);
+    msg->add("Action: toggle cannon.");
 }
 void editor_toggle_cannon_ammo_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::ToggleCannonAmmo);
+    msg->add("Action: toggle cannon ammo.");
 }
 void editor_add_unit_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::AddUnit);
+    msg->add("Action: add unit.");
 }
 void editor_remove_unit_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::RemoveUnit);
+    msg->add("Action: remove unit.");
 }
 void editor_paint_neutral_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::PaintNeutral);
+    msg->add("Action: paint neutral.");
 }
 void editor_paint_red_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::PaintRed);
+    msg->add("Action: paint red.");
 }
 void editor_paint_blue_cb(void) {
     MapEditor_UI->set_current_action(MapEditorAction::PaintBlue);
+    msg->add("Action: paint blue.");
 }
 void editor_save_map_cb(void) {
-    ofstream out("test.map", ios::out);
+    ofstream out("editing.map", ios::out);
     for(auto&& h : map->m_hexes) if(h->m_level == 0) h->m_level = -1;
     map->save(out);
+    msg->add("Saved as ./editing.map. Move finished maps to ./maps/");
 }
 
 static void init_buttons() {
@@ -2320,7 +2350,7 @@ static void init_buttons() {
     int btn_sy = 40;
     int spc_y = 5;
 
-    SideButton *button_build_harvester = new SideButton("Harv +");
+    SideButton *button_build_harvester = new SideButton("Harv+");
     button_build_harvester->m_x1 = btn_startx;
     button_build_harvester->m_y1 = btn_starty;
     button_build_harvester->m_x2 = btn_sx;
@@ -2329,7 +2359,7 @@ static void init_buttons() {
     button_build_harvester->onMouseDown = build_harvester_cb;
     Map_UI->addWidget(button_build_harvester);
 
-    SideButton *button_destroy_harvester = new SideButton("Harv -");
+    SideButton *button_destroy_harvester = new SideButton("Harv-");
     button_destroy_harvester->m_x1 = btn_startx;
     button_destroy_harvester->m_y1 = btn_starty + 1 * (btn_sy + spc_y);
     button_destroy_harvester->m_x2 = btn_sx;
@@ -2518,38 +2548,6 @@ static void init_buttons() {
     MapEditor_UI->addWidget(button_save_map);
 }
 
-__attribute__ ((unused))
-static void gen_map(int seed) {
-    int i = 0;
-    bool red = false;
-
-    for(int x = 0; x < 8; x++) {
-        for(int y = 0; y < 5; y++) {
-
-            int level = 2 + (x * y) % max(3, min(seed + 1, 9));
-
-            Hex *h = addHex(x, y, 50, level, i);
-            i++;
-
-            if(level == 3) {
-                h->m_contains_harvester = true;
-                h->m_contains_cannon = true;
-                h->m_ammo = 3;
-                h->m_side = Side::Red;
-                h->m_units_free = 3;
-                h->m_units_moved = 0;
-
-                if(red == false) {
-                    h->m_side = Side::Blue;
-                    red = true;
-                } else {
-                    red = false;
-                }
-            }
-        }
-    }
-}
-
 static void init(void) {
     allegro_init();
 
@@ -2562,57 +2560,67 @@ static void init(void) {
 
 static void new_game(GameType t) {
     game = new Game;
-    game->players[0]->m_ai_control = false;
-
-    if(strcmp(GameSetup_UI->m_selected_player->m_name, "vs. Human") == 0) {
-        game->players[1]->m_ai_control = false;
-    }
-
     map = new HexMap;
+    msg = new MessageLog;
     Map_UI = new MapUI;
     MapEditor_UI = new MapEditorUI;
-    Map_UI->clear_to = color_black;
-
-    const char *map_name = GameSetup_UI->m_selected_map->m_name;
-    debug("Map name %s selected", map_name);
 
     init_buttons();
 
-    sideinfo1 = new SideInfo(game->players[0]);
-    sideinfo1->setpos(75, 0, 125, 30);
-    sideinfo1->set_offsets();
-
-    sideinfo2 = new SideInfo(game->players[1]);
-    sideinfo2->setpos(130, 0, 180, 30);
-    sideinfo2->set_offsets();
-
-    Map_UI->addWidgets({ sideinfo1, sideinfo2 });
-
-    msg = new MessageLog;
-    msg->add("It's %s's turn", game->controller()->m_name);
-
-    Map_UI->addWidget(msg);
-
     if(t == GameType::Game) {
-        ui = Map_UI;
-    } else {
-        ui = MapEditor_UI;
-    }
 
-    if(ui == MapEditor_UI) {
-        int i = 0;
-        for(int y = 0; y < 7; y++) {
-            for(int x = 1; x < 12; x++) {
-                addHex(x, y, 50, 0, i++);
-            }
+        ui = Map_UI;
+        Map_UI->addWidget(msg);
+        Map_UI->clear_to = color_black;
+
+        game->players[0]->m_ai_control = false;
+        if(strcmp(GameSetup_UI->m_selected_player->m_name, "vs. Human") == 0) {
+            game->players[1]->m_ai_control = false;
         }
-        for(auto&& h : map->m_hexes) MapEditor_UI->addWidget(h);
-    }
-    else if(ui == Map_UI) {
+
+        const char *map_name = GameSetup_UI->m_selected_map->m_name;
+        debug("new_game(): Map name %s selected", map_name);
+
+        sideinfo1 = new SideInfo(game->players[0]);
+        sideinfo1->setpos(75, 0, 125, 30);
+        sideinfo1->set_offsets();
+
+        sideinfo2 = new SideInfo(game->players[1]);
+        sideinfo2->setpos(130, 0, 180, 30);
+        sideinfo2->set_offsets();
+
+        Map_UI->addWidgets({ sideinfo1, sideinfo2 });
+
         ifstream in(string("maps/") + map_name, ios::in);
+        if(in.fail() == true) fatal_error("new_game(): Couldn't load %s", map_name);
         map->load(in, true);
         for(auto&& h : map->m_hexes) Map_UI->addWidget(h);
+        msg->add("It's %s's turn", game->controller()->m_name);
+
     }
+    else if (t == GameType::Editor) {
+
+        ui = MapEditor_UI;
+        MapEditor_UI->addWidget(msg);
+
+        ifstream in("./editing.map", ios::in);
+        if(in.fail() == false) {
+            map->load(in, false);
+            msg->add("Loaded previous file (./editing.map). Move finished maps to ./maps/");
+        }
+        else {
+            int i = 0;
+            for(int y = 0; y < 7; y++) {
+                for(int x = 1; x < 12; x++) {
+                    addHex(x, y, 50, 0, i++);
+                }
+            }
+        }
+
+        for(auto&& h : map->m_hexes) MapEditor_UI->addWidget(h);
+
+    }
+
     map->gen_neighbors();
 }
 
@@ -2664,6 +2672,7 @@ bool handle_global_keys(void) {
     }
     if(ui == Map_UI) {
         int m = -1;
+        // add button shortcuts
         if(key == ALLEGRO_KEY_1) m = 1;
         if(key == ALLEGRO_KEY_2) m = 2;
         if(key == ALLEGRO_KEY_3) m = 3;
