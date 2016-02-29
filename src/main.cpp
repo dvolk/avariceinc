@@ -89,9 +89,6 @@ enum class GameType {
 enum class WidgetType {
     Hex,
     Button,
-    SideButton, // remove
-    MenuEntry,
-    MapSelectButton, // remove
     Other,
 };
 
@@ -294,6 +291,7 @@ struct Button : Widget {
     bool m_pressed;
     ALLEGRO_COLOR m_color = color_red;
 
+    Button() {}
     explicit Button(const char *_name) {
         m_name = _name;
         m_type = WidgetType::Button;
@@ -308,7 +306,6 @@ struct Button : Widget {
             al_draw_text(g_font, color_white, m_x1 + m_x_off,
                          m_y1 + m_y_off, 0, m_name);
         }
-        //draw_bb();
     }
 
     void mouseDownEvent(void) override {
@@ -321,12 +318,7 @@ struct Button : Widget {
     }
 };
 
-struct SideButton : Widget {
-    const char *m_name;
-    bool m_pressed;
-    float m_x_off;
-    float m_y_off;
-
+struct SideButton : Button {
     explicit SideButton(const char *_name) {
         m_name = _name;
         m_type = WidgetType::Button;
@@ -346,17 +338,12 @@ struct SideButton : Widget {
             al_draw_text(g_font, color_white, m_x1 + m_x_off,
                          m_y1 + m_y_off, 0, m_name);
         }
-        //draw_bb();
     }
     void mouseDownEvent(void) override {
         clear_opt_buttons();
         if(is_opt_button(this) == true) {
             this->m_pressed = true;
         }
-    }
-    void set_offsets(void) {
-        m_x_off = round((m_x2 - m_x1 - al_get_text_width(g_font, m_name)) / 2);
-        m_y_off = round((m_y2 - m_y1 - font_height) / 2);
     }
 };
 
@@ -383,6 +370,7 @@ struct SideController {
     int m_carriers;
     ALLEGRO_COLOR m_color;
     bool m_ai_control;
+    HexMap *m_map;
 
     SideController() { }
 
@@ -391,6 +379,7 @@ struct SideController {
         m_carriers = 0;
         m_side = s;
         m_ai_control = true;
+        m_map = NULL;
 
         if(s == Side::Red) {
             m_name = "Red";
@@ -404,6 +393,10 @@ struct SideController {
             fatal_error("SideController(): invalid side %d", (int)s);
         }
     }
+
+    vector<Hex *> my_hexes(void);
+    vector<Hex *> my_hexes_with_free_units(void);
+    bool harvester_nearby(Hex *);
 
     bool is_AI(void) {
         return m_ai_control;
@@ -451,7 +444,11 @@ struct HexMap {
     void move_or_attack(Hex *attacker, Hex *defender);
     void free_units(void);
     Hex *get_active_hex(void);
+
+    vector<Hex *> BFS(Hex *, int range, Side s, bool base_neighbors, bool ignore_sides);
     vector<Hex *> BFS(Hex *, int range);
+    vector<vector<Hex *>> clusters(Side s);
+    vector<vector<Hex *>> islands(void);
 
     void store_current_state(void);
     void clear_old_states(void);
@@ -461,16 +458,24 @@ struct HexMap {
 static void clear_active_hex(void);
 
 struct Game {
-    vector<SideController *> players;
+    vector<SideController *> m_players;
     SideController *m_current_controller;
 
-    Game() {
-        players.push_back(new SideController(Side::Red));
-        players.push_back(new SideController(Side::Blue));
-        m_current_controller = players[0];
+    Game(HexMap *m, int sides) {
+        m_players.push_back(new SideController(Side::Red));
+        m_players.push_back(new SideController(Side::Blue));
+        if(sides == 3) {
+            m_players.push_back(new SideController(Side::Yellow));
+        }
+        if(sides == 4) {
+            m_players.push_back(new SideController(Side::Green));
+        }
+        for(auto&& p : m_players) { p->m_map = m; }
+
+        m_current_controller = m_players[0];
     }
     ~Game() {
-        for(auto&& player : players) delete player;
+        for(auto&& player : m_players) delete player;
     }
 
     SideController *get_next_controller();
@@ -490,6 +495,13 @@ struct Game {
     bool controller_has_resources(int n) {
         return controller_resources() >= n;
     }
+    // vector<SideController *> others(void) {
+    //     auto ret;
+    //     for(auto&& p : m_players) {
+    //         if(p != m_current_controller) { ret.push_back(p); }
+    //     }
+    //     return ret;
+    // }
 };
 
 static Side get_current_side(void) {
@@ -497,12 +509,12 @@ static Side get_current_side(void) {
 }
 
 SideController *Game::get_next_controller() {
-    vector<SideController *>::iterator it = find(players.begin(), players.end(), m_current_controller);
+    vector<SideController *>::iterator it = find(m_players.begin(), m_players.end(), m_current_controller);
 
     // wrap around
-    if(++it == players.end()) {
-        m_current_controller = players[0];
-        return players[0];
+    if(++it == m_players.end()) {
+        m_current_controller = m_players[0];
+        return m_players[0];
     }
     else {
         m_current_controller = *it;
@@ -787,29 +799,89 @@ HexMap::~HexMap()
 {
 }
 
+bool SideController::harvester_nearby(Hex *h) {
+    if(h->m_contains_harvester == true)
+        return true;
+
+    for(auto&& n : m_map->neighbors(h)) {
+        if(n->m_contains_harvester == true) {
+            return true;
+        }
+    }
+    return false;
+}
+
+vector<Hex *> SideController::my_hexes(void) {
+    vector<Hex *> ret;
+    for(auto&& h : m_map->m_hexes) {
+        if(h->alive() && h->m_side == m_side) {
+            ret.push_back(h);
+        }
+    }
+    return ret;
+}
+
+vector<Hex *> SideController::my_hexes_with_free_units(void) {
+    vector<Hex *> ret;
+    for(auto&& h : m_map->m_hexes) {
+        if(h->alive() && h->m_side == m_side && h->m_units_free > 0) {
+            ret.push_back(h);
+        }
+    }
+    return ret;
+}
+
 vector<AIAction> SideController::do_AI(void) {
     // save the state before, do the ai while saving individual actions, undo the map, then replay it slowly
-    map->store_current_state();
+    m_map->store_current_state();
     vector<AIAction> ret;
 
-    vector<Hex *> mine;
-    for(auto&& h : map->m_hexes) {
-        if(h->alive() && h->m_side == m_side) {
-            mine.push_back(h);
+    for(auto&& h : my_hexes()) {
+        if(game->controller_resources() > 10) {
+            if(not harvester_nearby(h)) {
+                m_map->build_harvester(h);
+                game->controller_pay(10);
+                ret.push_back(AIAction(MapAction::BuildHarvester, h, NULL, 0));
+            }
         }
     }
 
+    vector<Hex *> mine = my_hexes_with_free_units();
+
     for(auto&& h : mine) {
-        for(auto&& neighbor : map->neighbors(h)) {
+        for(auto&& neighbor : m_map->neighbors(h)) {
             if(neighbor->alive() and h->m_units_free >= 1 and neighbor->m_side != h->m_side) {
-                map->m_moving_units = 1;
-                map->move_or_attack(h, neighbor);
+                m_map->m_moving_units = 1;
+                m_map->move_or_attack(h, neighbor);
                 ret.push_back(AIAction(MapAction::MovingUnits, h, neighbor, 1));
             }
         }
     }
 
-    map->undo();
+    mine = my_hexes_with_free_units();
+
+    for(auto&& h : mine) {
+        vector<Hex *> allowed_moves = m_map->BFS(h, 4);
+
+        float dist = -1;
+        Hex *most_distant = NULL;
+        for(auto&& am : allowed_moves) {
+            if(m_map->hex_distance(h, am) > dist) {
+                if(am->m_level != 1 and harvester_nearby(am) == false) {
+                    dist = m_map->hex_distance(h, am);
+                    most_distant = am;
+                }
+            }
+        }
+
+        if(most_distant != NULL) {
+            m_map->m_moving_units = h->m_units_free;
+            m_map->move_or_attack(h, most_distant);
+            ret.push_back(AIAction(MapAction::MovingUnits, h, most_distant, m_map->m_moving_units));
+        }
+    }
+
+    m_map->undo();
     debug("SideController::do_AI(): number of ai actions: %d", ret.size());
     return ret;
 }
@@ -889,6 +961,32 @@ public:
         m_marked_hexes = false;
     }
 };
+
+static void center_view_on_hexes(vector<Hex *>& hexes) {
+    float tx = 0;
+    float ty = 0;
+    for(auto&& h : hexes) {
+        tx += h->m_cx;
+        ty += h->m_cy;
+    }
+    view_x = (tx / hexes.size()) - display_x / 2;
+    view_y = (ty / hexes.size()) - display_y / 2;
+}
+
+static void center_view_on_alive_hexes(vector<Hex *>& hexes) {
+    float tx = 0;
+    float ty = 0;
+    int n = 0;
+    for(auto&& h : hexes) {
+        if(h->alive() == true) {
+            tx += h->m_cx;
+            ty += h->m_cy;
+            n++;
+        }
+    }
+    view_x = (tx / n) - display_x / 2;
+    view_y = (ty / n) - display_y / 2;
+}
 
 struct MapEditorUI : UI {
     MapEditorAction m_current_action;
@@ -1042,8 +1140,7 @@ struct MainMenuUI : UI {
 
     MainMenuUI();
     ~MainMenuUI() {
-        for(auto&& w : widgets)
-            if(w->m_type == WidgetType::MenuEntry) delete w;
+        for(auto&& w : widgets) delete w;
     }
     void draw(void) override;
     void update(void) override {
@@ -1117,7 +1214,6 @@ GameSetupUI::GameSetupUI() {
                             150 + xsize, y + 30);
             btn_map->onMouseDown = btn_map_select_cb;
             btn_map->set_offsets();
-            btn_map->m_type = WidgetType::MapSelectButton;
             map_btns.push_back(btn_map);
             m_map_select_btns.push_back(btn_map);
 
@@ -1228,7 +1324,7 @@ struct MenuEntry : public Widget {
 
     explicit MenuEntry(const char *name) {
         m_name = name;
-        m_type = WidgetType::MenuEntry;
+        m_type = WidgetType::Other;
         m_x_off = 0;
         m_y_off = 0;
     }
@@ -1451,7 +1547,7 @@ void HexMap::fire_cannon(Hex *from, Hex *to) {
 bool HexMap::cannon_in_range(Hex *from, Hex *to) {
     float dist = map->hex_distance(from, to);
 
-    return dist < (0.4 + 2 * m_cannon_min_range) * from->m_circle_bb_radius or dist > (0.4 + 2 * m_cannon_max_range) * from->m_circle_bb_radius;
+    return dist > (0.4 + 2 * m_cannon_min_range) * from->m_circle_bb_radius and dist < (0.4 + 2 * m_cannon_max_range) * from->m_circle_bb_radius;
 }
 
 void HexMap::save(ostream &os) {
@@ -1481,7 +1577,55 @@ void HexMap::load(istream &is, bool prune) {
     }
 }
 
+vector<vector<Hex *>> HexMap::islands(void) {
+    vector<bool> visited(m_hexes.size(), false);
+
+    vector<vector<Hex *>> ret;
+
+    for(auto&& h : m_hexes) {
+        if(h->alive() == true) {
+            if(visited[h->m_index] == false) {
+                visited[h->m_index] = true;
+                vector<Hex *> cl = BFS(h, 100, h->m_side, false, true);
+                for(auto&& c: cl) visited[c->m_index] = true;
+                ret.push_back(cl);
+            }
+        }
+    }
+
+    debug("islands: %d", ret.size());
+    for(auto&& r : ret) debug("island size: %d", r.size());
+
+    return ret;
+}
+
+vector<vector<Hex *>> HexMap::clusters(Side s) {
+    vector<bool> visited(m_hexes.size(), false);
+
+    vector<vector<Hex *>> ret;
+
+    for(auto&& h : m_hexes) {
+        if(h->alive() == true && h->m_side == s) {
+            if(visited[h->m_index] == false) {
+                visited[h->m_index] = true;
+                vector<Hex *> cl = BFS(h, 100, h->m_side, false, false);
+                for(auto&& c: cl) visited[c->m_index] = true;
+                ret.push_back(cl);
+            }
+        }
+    }
+
+    debug("clusters: %d", ret.size());
+    for(auto&& r : ret) debug("cluster size: %d", r.size());
+
+    return ret;
+}
+
 vector<Hex *> HexMap::BFS(Hex *base, int range) {
+    return BFS(base, range, base->m_side, true, false);
+}
+
+vector<Hex *> HexMap::BFS(Hex *base, int range, Side s, bool base_neighbors, bool ignore_sides) {
     struct bfsdata {
         float distance;
 
@@ -1502,14 +1646,14 @@ vector<Hex *> HexMap::BFS(Hex *base, int range) {
 
             bool not_visited = hexdata[neighbor->m_index].distance == -1;
             bool ok_side_or_base_neighbor =
-                neighbor->m_side == base->m_side || cur == base;
+                ignore_sides || (neighbor->m_side == s || ((cur == base) && base_neighbors));
 
             if(neighbor->alive() && not_visited && ok_side_or_base_neighbor) {
 
                 hexdata[neighbor->m_index].distance =
                     hexdata[cur->m_index].distance + 1;
 
-                if(neighbor->m_side == base->m_side &&
+                if((ignore_sides || neighbor->m_side == s) &&
                    hexdata[neighbor->m_index].distance <= range)
                     q.push_back(neighbor);
             }
@@ -1532,7 +1676,7 @@ void HexMap::undo(void) {
         return;
 
     SideController &old_cont = m_old_states.back().m_sc;
-    vector<Hex> old_hexes = m_old_states.back().m_hexes;
+    vector<Hex> &old_hexes = m_old_states.back().m_hexes;
 
     debug("HexMap::undo(): undo to %p", old_hexes);
     msg->add("Undo!");
@@ -2084,6 +2228,11 @@ static void end_turn_cb(void) {
     if(s->is_AI() == true) {
         Map_UI->ai_play(s->do_AI());
     }
+    center_view_on_alive_hexes(map->m_hexes);
+
+    map->clusters(Side::Red);
+    map->clusters(Side::Blue);
+    map->islands();
 }
 
 static void build_harvester_cb(void) {
@@ -2559,8 +2708,8 @@ static void init(void) {
 }
 
 static void new_game(GameType t) {
-    game = new Game;
     map = new HexMap;
+    game = new Game(map, 2);
     msg = new MessageLog;
     Map_UI = new MapUI;
     MapEditor_UI = new MapEditorUI;
@@ -2573,19 +2722,19 @@ static void new_game(GameType t) {
         Map_UI->addWidget(msg);
         Map_UI->clear_to = color_black;
 
-        game->players[0]->m_ai_control = false;
+        game->m_players[0]->m_ai_control = false;
         if(strcmp(GameSetup_UI->m_selected_player->m_name, "vs. Human") == 0) {
-            game->players[1]->m_ai_control = false;
+            game->m_players[1]->m_ai_control = false;
         }
 
         const char *map_name = GameSetup_UI->m_selected_map->m_name;
         debug("new_game(): Map name %s selected", map_name);
 
-        sideinfo1 = new SideInfo(game->players[0]);
+        sideinfo1 = new SideInfo(game->m_players[0]);
         sideinfo1->setpos(75, 0, 125, 30);
         sideinfo1->set_offsets();
 
-        sideinfo2 = new SideInfo(game->players[1]);
+        sideinfo2 = new SideInfo(game->m_players[1]);
         sideinfo2->setpos(130, 0, 180, 30);
         sideinfo2->set_offsets();
 
@@ -2596,7 +2745,7 @@ static void new_game(GameType t) {
         map->load(in, true);
         for(auto&& h : map->m_hexes) Map_UI->addWidget(h);
         msg->add("It's %s's turn", game->controller()->m_name);
-
+        center_view_on_hexes(map->m_hexes);
     }
     else if (t == GameType::Editor) {
 
@@ -2618,7 +2767,7 @@ static void new_game(GameType t) {
         }
 
         for(auto&& h : map->m_hexes) MapEditor_UI->addWidget(h);
-
+        center_view_on_hexes(map->m_hexes);
     }
 
     map->gen_neighbors();
