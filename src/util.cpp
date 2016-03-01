@@ -86,6 +86,8 @@ void fatal_error(const char *format_string, ...) {
 void debug(const char *format_string, ...) {
     //if(config.debug_output == false)
     //    return;
+    extern bool debug_output;
+    if(debug_output == false) { return; }
 
     va_list args;
     va_start(args, format_string);
