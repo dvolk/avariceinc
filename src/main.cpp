@@ -369,23 +369,55 @@ struct AIAction {
 
 struct Blob {
     Side side;
+    int level_sum;
 
     vector<Hex *> all_hexes;
+    vector<Hex *> units;
     vector<Hex *> harvesters;
     vector<Hex *> armories;
     vector<Hex *> cannons;
 
     int free_units;
     int moved_units;
-    vector<vector<Hex *>> *island;
 
     void print(void);
 };
 
+struct island {
+    int level_sum;
+    vector<Hex *> hexes;
+    vector<Hex *> units;
+    vector<Hex *> dying_hexes;
+    vector<Blob> my_blobs;
+    vector<Blob> enemy_blobs;
+    vector<Blob> neutral_blobs;
+};
+
+struct ai_data {
+    vector<Blob> all_my_blobs;
+    vector<Blob> all_enemy_blobs;
+
+    vector<island> all_islands;
+    vector<island> contested_islands;
+    vector<island> islands_with_me;
+    vector<island> islands_with_enemies;
+    vector<island> islands_with_me_only;
+    vector<island> islands_with_enemy_only;
+    vector<island> islands_with_neutral_only;
+
+    void analyze(HexMap *m);
+
+    vector<AIAction> actions;
+};
+
+static void set_sideinfo_offsets(void);
+
 struct SideController {
+private:
+    int m_resources;
+public:
     Side m_side;
     const char *m_name;
-    int m_resources;
     int m_carriers;
     ALLEGRO_COLOR m_color;
     bool m_ai_control;
@@ -416,17 +448,30 @@ struct SideController {
     vector<Hex *> my_hexes(void);
     vector<Hex *> my_hexes_with_free_units(void);
     bool harvester_nearby(Hex *);
+    bool building_nearby(Hex *);
 
     bool is_AI(void) {
         return m_ai_control;
     }
 
-    void ai_blob_build_harvesters(vector<AIAction>&, Blob& blob);
-    void ai_blob_expand(vector<AIAction>&, Blob& b);
-    void ai_blob_move_max(vector<AIAction>&, Blob &b);
-    void ai_blob_attack_blob(vector<AIAction>&, Blob& attacker, Blob& other);
-    void ai_blob_move_to(vector<AIAction>& actions, Blob& blob, Hex *to);
-    void ai_blob_build_armories(vector<AIAction>& actions, Blob& blob);
+    int get_resources(void) {
+        assert(m_resources >= 0);
+        return m_resources;
+    }
+    void add_resources(int n) {
+        m_resources += n;
+        assert(m_resources >= 0);
+        set_sideinfo_offsets();
+    }
+
+    void ai_buy_transport(ai_data &ai);
+    void ai_blob_build_harvesters(ai_data& ai, Blob& blob);
+    void ai_blob_expand(ai_data& ai, Blob& blob);
+    void ai_blob_move_max(ai_data& ai, Blob &blob);
+    void ai_blob_attack_blob(ai_data& ai, Blob& attacker, Blob& other);
+    void ai_blob_move_to(ai_data& ai, Blob& blob, Hex *to);
+    void ai_blob_build_armories(ai_data& ai, Blob& blob);
+    void ai_blob_transport(ai_data& ai, island& from, island& to);
 
     vector<AIAction> do_AI(void);
 };
@@ -510,17 +555,15 @@ struct Game {
     SideController *controller(void) {
         return m_current_controller;
     }
-    int& controller_resources(void) {
-        return controller()->m_resources;
-    }
     int& controller_carriers(void) {
         return controller()->m_carriers;
     }
     void controller_pay(int n) {
-        controller_resources() -= n;
+        m_current_controller->add_resources(-n);
     }
     bool controller_has_resources(int n) {
-        return controller_resources() >= n;
+        debug("controller_has_resources(): %d >= %d?", m_current_controller->get_resources(), n);
+        return m_current_controller->get_resources() >= n;
     }
     Side side(void) {
         return m_current_controller->m_side;
@@ -544,38 +587,49 @@ SideController *Game::get_next_controller() {
     // wrap around
     if(++it == m_players.end()) {
         m_current_controller = m_players[0];
-        return m_players[0];
     }
     else {
         m_current_controller = *it;
-        return *it;
     }
+
+    return m_current_controller;
 }
 
 struct SideInfo : Widget {
     SideController *m_s;
     float m_x_off;
     float m_y_off;
+    int r;
+    int m;
 
     explicit SideInfo(SideController *s) {
         m_s = s;
         m_x_off = 0;
         m_y_off = 0;
+        r = 0;
+        m = 0;
     }
 
     void draw(void) override {
         al_draw_filled_rectangle(m_x1, m_y1, m_x2, m_y2, m_s->m_color);
         al_draw_textf(g_font, color_white, m_x1 + m_x_off,
                       m_y1 + m_y_off, 0,
-                      "%d/%d", m_s->m_resources, m_s->m_carriers);
+                      "%d/%d", r, m);
     }
     void set_offsets(void) {
+        r = m_s->get_resources();
+        m = m_s->m_carriers;
         char tmp[10];
-        snprintf(tmp, sizeof(tmp), "%d/%d", m_s->m_resources, m_s->m_carriers);
+        snprintf(tmp, sizeof(tmp), "%d/%d", m_s->get_resources(), m_s->m_carriers);
         m_x_off = round((m_x2 - m_x1 - al_get_text_width(g_font, tmp)) / 2);
         m_y_off = round((m_y2 - m_y1 - font_height) / 2);
     }
 };
+
+static void set_sideinfo_offsets(void) {
+    sideinfo1->set_offsets();
+    sideinfo2->set_offsets();
+}
 
 static bool marked_hexes(void);
 static inline void draw_hex(float x, float y, float a, float zrot, float cr, float cg, float cb, float r, float d);
@@ -679,36 +733,38 @@ struct Hex : Widget {
     }
 
     inline void draw_text(float x, float y, ALLEGRO_COLOR& txt_color) {
+        float fx = floor(x);
+        float fy = floor(y);
         al_draw_textf(g_font,
                       txt_color,
-                      x - 5,
-                      y - 7,
+                      fx - 5,
+                      fy - 7,
                       0,
                       "%d", m_level);
 
         if(m_contains_harvester == true)
             al_draw_text(g_font, txt_color,
-                         x - 25, y - 25,
+                         fx - 25, fy - 25,
                          0, "H");
 
         if(m_contains_armory == true)
             al_draw_text(g_font, txt_color,
-                         x - 5, y - 25,
+                         fx - 5, fy - 25,
                          0, "A");
 
         if(m_contains_cannon == true)
             al_draw_text(g_font, txt_color,
-                         x + 15, y - 25,
+                         fx + 15, fy - 25,
                          0, "C");
 
         if(m_ammo or m_loaded_ammo)
             al_draw_text(g_font, txt_color,
-                         x + 15, y - 7,
+                         fx + 15, fy - 7,
                           0, "1");
 
         if(m_units_free > 0 or m_units_moved > 0)
             al_draw_textf(g_font, txt_color,
-                          x - 12, y + 10,
+                          fx - 12, fy + 10,
                           0, "%d/%d", m_units_free, m_units_moved);
     }
 
@@ -833,9 +889,26 @@ HexMap::~HexMap()
 {
 }
 
-bool SideController::harvester_nearby(Hex *h) {
-    if(h->m_contains_harvester == true)
+bool SideController::building_nearby(Hex *h) {
+    if(h->m_contains_harvester == true or
+       h->m_contains_armory == true or
+       h->m_contains_cannon == true)
         return true;
+
+    for(auto&& n : m_map->neighbors(h)) {
+        if(n->m_contains_harvester == true or
+           h->m_contains_armory == true or
+           h->m_contains_cannon == true) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SideController::harvester_nearby(Hex *h) {
+    if(h->m_contains_harvester == true) {
+        return true;
+    }
 
     for(auto&& n : m_map->neighbors(h)) {
         if(n->m_contains_harvester == true) {
@@ -866,40 +939,63 @@ vector<Hex *> SideController::my_hexes_with_free_units(void) {
 }
 
 void Blob::print(void) {
-    debug("BLOB %p %d hexes: %d, har: %d, ar: %d, can: %d, units: %d/%d",
-          island, side, all_hexes.size(), harvesters.size(), armories.size(),
-          cannons.size(), free_units, moved_units);
+    debug("BLOB %d %d hexes: %d, har: %d, ar: %d, can: %d, units: %d/%d",
+          level_sum, side, all_hexes.size(), harvesters.size(),
+          armories.size(), cannons.size(), free_units, moved_units);
 }
 
-Blob analyze(vector<Hex *>& hexes) {
+Blob blob_analyze(vector<Hex *>& hexes) {
     Blob b;
+    b.level_sum = 0;
     b.free_units = 0;
     b.moved_units = 0;
     b.side = hexes.front()->m_side;
     for(auto&& h : hexes) {
+        b.level_sum += h->m_level;
         b.all_hexes.push_back(h);
         if(h->m_contains_harvester == true) { b.harvesters.push_back(h); }
         if(h->m_contains_cannon == true) { b.cannons.push_back(h); }
         if(h->m_contains_armory == true) { b.armories.push_back(h); }
-        if(h->m_units_free > 0) { b.free_units += h->m_units_free; }
-        if(h->m_units_moved > 0) { b.moved_units += h->m_units_moved; }
+        if(h->m_units_free > 0) { b.free_units += h->m_units_free;
+            b.units.push_back(h);
+        }
+        if(h->m_units_moved > 0) { b.moved_units += h->m_units_moved;
+        }
     }
     return b;
 }
 vector<vector<Hex *>> find_clusters(HexMap* m, vector<Hex *>& hexes);
 
+void SideController::ai_buy_transport(ai_data &ai) {
+    if(game->controller_has_resources(50) and game->controller()->m_carriers <= 1) {
+        game->controller_pay(50);
+        game->controller()->m_carriers += 1;
+        ai.actions.push_back(AIAction(MapAction::BuildCarrier, NULL, NULL, -1));
+    }
+}
+
+void SideController::ai_blob_transport(ai_data& ai, island& from, island& to) {
+    Hex *to_go = from.units.front();
+    debug("SideController::ai_blob_transport() %d", to_go->m_units_free);
+
+    Hex *landing_hex = to.hexes.front();
+    m_map->m_moving_units = to_go->m_units_free;
+    map->move_or_attack(to_go, landing_hex);
+    game->controller()->m_carriers -= 1;
+    ai.actions.push_back(AIAction(MapAction::MovingUnits, to_go, landing_hex, m_map->m_moving_units));
+}
+
 // build harvesters on good spots
 // TODO best spots instead of good spots
-void SideController::ai_blob_build_harvesters(vector<AIAction>& actions, Blob& blob) {
+void SideController::ai_blob_build_harvesters(ai_data &ai, Blob& blob) {
     if(blob.harvesters.size() >= 2) { return; }
 
     for(auto&& h : blob.all_hexes) {
-        if(game->controller_resources() > 10) {
-            if(not harvester_nearby(h)) {
-                if(m_map->neighbors(h).size() <= 3) continue;
+        if(game->controller()->get_resources() > 10) {
+            if(not building_nearby(h)) {
                 m_map->build_harvester(h);
                 game->controller_pay(10);
-                actions.push_back(AIAction(MapAction::BuildHarvester, h, NULL, 0));
+                ai.actions.push_back(AIAction(MapAction::BuildHarvester, h, NULL, 0));
             }
         }
     }
@@ -910,50 +1006,45 @@ void sort_by_levels(vector<Hex *>& hs) {
             return h1->m_level > h2->m_level; });
 }
 
-void SideController::ai_blob_build_armories(vector<AIAction>& actions, Blob& blob) {
+void SideController::ai_blob_build_armories(ai_data &ai, Blob& blob) {
     if(not blob.armories.empty()) { return; }
-    if(game->controller_resources() < 35) { return; }
+    if(game->controller()->get_resources() < 35) { return; }
     debug("SideController::ai_blob_build_armories()");
     // try to find a good spot that doesn't neighbor harvesters
     bool built = false;
     sort_by_levels(blob.all_hexes);
     for(auto&& h : blob.all_hexes) {
         if(built == true) { break; }
-        if(h->m_contains_harvester == true) { break; }
+        if(game->controller()->get_resources() < 35) { break; }
 
-        if(game->controller_resources() < 35) { break; }
-
-        bool suitable = true;
-        for(auto&& n : m_map->neighbors(h)) {
-            if(n->m_contains_harvester == true) { suitable = false; }
-        }
-        if(h->m_level < 3) suitable = false;
+        bool suitable = harvester_nearby(h) == false;
 
         if(suitable == true) {
-            if(game->controller_resources() >= 35) {
-                map->build_armory(h);
-                actions.push_back(AIAction(MapAction::BuildArmory, h, NULL, -1));
+            if(game->controller()->get_resources() >= 35) {
+                m_map->build_armory(h);
+                game->controller_pay(35);
+                ai.actions.push_back(AIAction(MapAction::BuildArmory, h, NULL, -1));
                 built = true;
             }
         }
     }
-    // build one anyway
-    if(not built) {
-        for(auto&& h : blob.all_hexes) {
-            if(h->m_level < 3) { continue; }
-            if(built == true) { break; }
-            if(game->controller_resources() >= 35) {
-                map->build_armory(h);
-                actions.push_back(AIAction(MapAction::BuildArmory, h, NULL, -1));
-                built = true;
-            }
-        }
-    }
+    // // build one anyway
+    // if(not built) {
+    //     for(auto&& h : blob.all_hexes) {
+    //         if(h->m_level < 3) { continue; }
+    //         if(built == true) { break; }
+    //         if(game->controller_resources() >= 35) {
+    //             map->build_armory(h);
+    //             actions.push_back(AIAction(MapAction::BuildArmory, h, NULL, -1));
+    //             built = true;
+    //         }
+    //     }
+    // }
 }
 
 
 // expand into neutral territory with 1 unit
-void SideController::ai_blob_expand(vector<AIAction>& actions, Blob& blob) {
+void SideController::ai_blob_expand(ai_data &ai, Blob& blob) {
     for(auto&& h : blob.all_hexes) {
         if(h->m_units_free >= 1) {
             for(auto&& neighbor : m_map->neighbors(h)) {
@@ -961,7 +1052,7 @@ void SideController::ai_blob_expand(vector<AIAction>& actions, Blob& blob) {
                    h->m_units_free >= 1) {
                     m_map->m_moving_units = 1;
                     m_map->move_or_attack(h, neighbor);
-                    actions.push_back(AIAction(MapAction::MovingUnits, h, neighbor, 1));
+                    ai.actions.push_back(AIAction(MapAction::MovingUnits, h, neighbor, 1));
                 }
             }
         }
@@ -969,7 +1060,7 @@ void SideController::ai_blob_expand(vector<AIAction>& actions, Blob& blob) {
 }
 
 // moves units across the blob as far away from origin as possible
-void SideController::ai_blob_move_max(vector<AIAction>& actions, Blob& blob) {
+void SideController::ai_blob_move_max(ai_data &ai, Blob& blob) {
     for(auto&& h : blob.all_hexes) {
         if(h->m_units_free == 0)
             continue;
@@ -990,7 +1081,7 @@ void SideController::ai_blob_move_max(vector<AIAction>& actions, Blob& blob) {
         if(most_distant != NULL) {
             m_map->m_moving_units = h->m_units_free;
             m_map->move_or_attack(h, most_distant);
-            actions.push_back(AIAction(MapAction::MovingUnits, h, most_distant, m_map->m_moving_units));
+            ai.actions.push_back(AIAction(MapAction::MovingUnits, h, most_distant, m_map->m_moving_units));
         }
     }
 }
@@ -1010,13 +1101,13 @@ static Hex *furthest_along_path(HexMap *m, Hex *from, vector<Hex *>& path) {
 }
 
 // attack of the blobs
-void SideController::ai_blob_attack_blob(vector<AIAction>& actions, Blob& attacker, Blob& other) {
+void SideController::ai_blob_attack_blob(ai_data &ai, Blob& attacker, Blob& other) {
     if(other.free_units + other.moved_units >= attacker.free_units + attacker.moved_units) {
         for(auto&& arm : attacker.armories) {
-            if(game->controller_resources() >= 8) {
+            if(game->controller()->get_resources() >= 8) {
                 arm->m_units_moved += 1;
                 game->controller_pay(8);
-                actions.push_back(AIAction(MapAction::BuildWalker, arm, NULL, 1));
+                ai.actions.push_back(AIAction(MapAction::BuildWalker, arm, NULL, 1));
             }
         }
 
@@ -1039,12 +1130,12 @@ void SideController::ai_blob_attack_blob(vector<AIAction>& actions, Blob& attack
         Hex *next = furthest_along_path(m_map, unit, path);
         m_map->m_moving_units = unit->m_units_free;
         m_map->move_or_attack(unit, next);
-        actions.push_back(AIAction(MapAction::MovingUnits, unit, next, m_map->m_moving_units));
+        ai.actions.push_back(AIAction(MapAction::MovingUnits, unit, next, m_map->m_moving_units));
     }
 }
 
 // attack of the blobs
-void SideController::ai_blob_move_to(vector<AIAction>& actions, Blob& blob, Hex *to) {
+void SideController::ai_blob_move_to(ai_data &ai, Blob& blob, Hex *to) {
     vector<Hex *> my_units;
     for(auto&& h : blob.all_hexes) {
         if(h->m_units_free > 0) my_units.push_back(h);
@@ -1059,7 +1150,7 @@ void SideController::ai_blob_move_to(vector<AIAction>& actions, Blob& blob, Hex 
         Hex *next = furthest_along_path(m_map, unit, path);
         m_map->m_moving_units = unit->m_units_free;
         m_map->move_or_attack(unit, next);
-        actions.push_back(AIAction(MapAction::MovingUnits, unit, next, m_map->m_moving_units));
+        ai.actions.push_back(AIAction(MapAction::MovingUnits, unit, next, m_map->m_moving_units));
     }
 }
 
@@ -1080,83 +1171,128 @@ static Hex *hex_with_most_free_units(Blob &b) {
     return hex;
 }
 
+void ai_data::analyze(HexMap *m) {
+    all_my_blobs.clear();
+    all_enemy_blobs.clear();
+    all_islands.clear();
+    contested_islands.clear();
+    islands_with_me.clear();
+    islands_with_enemies.clear();
+    islands_with_me_only.clear();
+    islands_with_enemy_only.clear();
+    islands_with_neutral_only.clear();
+
+    vector<vector<Hex *>> islands_hxs = m->islands();
+
+    for(auto&& island_hxs : islands_hxs) {
+        island i;
+        i.hexes = island_hxs;
+        i.level_sum = 0;
+
+        for(auto&& h : i.hexes) {
+            i.level_sum += h->m_level;
+            if(h->m_units_free > 0) i.units.push_back(h);
+        }
+
+        vector<vector<Hex *>> clusters = find_clusters(m, island_hxs);
+
+        for(auto&& cluster : clusters) {
+            Blob b = blob_analyze(cluster);
+            b.print();
+            if(b.side == game->side()) {
+                all_my_blobs.push_back(b);
+                i.my_blobs.push_back(b);
+            }
+            else if(b.side != Side::Neutral) {
+                all_enemy_blobs.push_back(b);
+                i.enemy_blobs.push_back(b);
+            } else { // neutral
+                i.neutral_blobs.push_back(b);
+            }
+        }
+        if(i.my_blobs.empty() == false) {
+            islands_with_me.push_back(i);
+        }
+        if(i.enemy_blobs.empty() == false) {
+            islands_with_enemies.push_back(i);
+        }
+        if(i.enemy_blobs.empty()) islands_with_me_only.push_back(i);
+        if(i.my_blobs.empty()) islands_with_enemy_only.push_back(i);
+        if(i.enemy_blobs.empty() and i.my_blobs.empty()) {
+            islands_with_neutral_only.push_back(i);
+        }
+        if(i.enemy_blobs.empty() == false and i.my_blobs.empty() == false) {
+            contested_islands.push_back(i);
+        }
+
+        all_islands.push_back(i);
+    }
+}
+
 vector<AIAction> SideController::do_AI(void) {
     // save the state before, do the ai while saving individual actions, undo the map, then replay it slowly
     m_map->store_current_state();
-    vector<AIAction> actions;
 
-    vector<Blob> my_blobs;
-    vector<Blob> enemy_blobs;
+    ai_data ai;
+    ai.analyze(m_map);
 
-    for(auto&& island : m_map->islands()) {
-        vector<vector<Hex *>> clusters = find_clusters(m_map, island);
-
-        for(auto&& cluster : clusters) {
-            Blob b = analyze(cluster);
-            b.print();
-            if(b.side == game->side()) { my_blobs.push_back(b); }
-            else if(b.side != Side::Neutral) { enemy_blobs.push_back(b); }
+    for(auto&& island : ai.islands_with_me) {
+        for(auto&& b : island.my_blobs) {
+            ai_blob_expand(ai, b);
+        }
+    }
+    for(auto&& island : ai.islands_with_me) {
+        for(auto&& b : island.my_blobs) {
+            ai_blob_build_harvesters(ai, b);
+        }
+    }
+    for(auto&& island : ai.islands_with_me) {
+        for(auto&& b : island.my_blobs) {
+            ai_blob_build_armories(ai, b);
+        }
+    }
+    for(auto&& island : ai.contested_islands) {
+        for(auto&& my_blob : island.my_blobs) {
+            ai_blob_attack_blob(ai, my_blob, island.enemy_blobs.front());
         }
     }
 
-    for(auto&& b : my_blobs) {
-        ai_blob_expand(actions, b);
-    }
-    for(auto&& b : my_blobs) {
-        ai_blob_build_harvesters(actions, b);
-    }
-    for(auto&& b : my_blobs) {
-        ai_blob_build_armories(actions, b);
-    }
+    ai.analyze(m_map);
 
-    vector<Blob *> my_lonely_blobs;
+    // handle lonely blobs
+    for(auto&& island : ai.islands_with_me_only) {
+        if(island.units.size() == 1) {
+            // they're all together, so let's transport them somewhere else
 
-    for(auto&& b : my_blobs) {
-        Blob *reachable_enemy_blob = NULL;
+            // buy a transport
+            ai_buy_transport(ai);
 
-        for(auto&& eb : enemy_blobs) {
-            if(reachable(m_map, b, eb) == true) {
-                reachable_enemy_blob = &eb;
+            if(game->controller()->m_carriers < 1)
+                break;
+
+            if(ai.islands_with_enemy_only.size() >= 1) {
+                ai_blob_transport(ai,
+                                  island,
+                                  ai.islands_with_enemy_only.front());
+            }
+            else if(ai.islands_with_neutral_only.size() >= 1) {
+                ai_blob_transport(ai,
+                                  island,
+                                  ai.islands_with_neutral_only.front());
             }
         }
-
-        if(reachable_enemy_blob != NULL) {
-            ai_blob_attack_blob(actions, b, *reachable_enemy_blob);
-        } else {
-            my_lonely_blobs.push_back(&b);
+        else {
+            // group them up.
+            sort_by_levels(island.hexes);
+            for(auto&& blob : island.my_blobs) {
+                ai_blob_move_to(ai, blob, island.hexes.front());
+            }
         }
     }
-
-    debug("lonely blobs: %d", my_lonely_blobs.size());
-    if(not my_lonely_blobs.empty()) {
-        if(game->controller_has_resources(50) and game->controller()->m_carriers <= 1) {
-            game->controller_pay(50);
-            game->controller()->m_carriers += 1;
-            actions.push_back(AIAction(MapAction::BuildCarrier, NULL, NULL, -1));
-        }
-    }
-    for(auto&& lonely_blob : my_lonely_blobs) {
-        if(game->controller()->m_carriers >= 1) {
-            Hex *attacker = hex_with_most_free_units(*lonely_blob);
-            if(attacker == NULL) continue;
-            m_map->m_moving_units = attacker->m_units_free;
-            Hex *landing_hex = enemy_blobs.front().all_hexes.front();
-            map->move_or_attack(attacker, landing_hex);
-            game->controller()->m_carriers -= 1;
-            actions.push_back(AIAction(MapAction::MovingUnits, attacker, landing_hex, m_map->m_moving_units));
-        } else {
-            sort_by_levels(lonely_blob->all_hexes);
-            ai_blob_move_to(actions, *lonely_blob, lonely_blob->all_hexes.front());
-        }
-    }
-
-    // for(auto&& b : my_blobs) {
-    //     ai_blob_move_max(b);
-    // }
 
     m_map->undo();
-    debug("SideController::do_AI(): number of ai actions: %d", actions.size());
-    return actions;
+    debug("SideController::do_AI(): number of ai actions: %d", ai.actions.size());
+    return ai.actions;
 }
 
 static void goto_mainmenu(void);
@@ -2100,11 +2236,11 @@ void HexMap::harvest(void) {
                    h_neighbor->harvested() == false)
                     {
                         h_neighbor->harvest();
-                        game->controller_resources() += 2;
+                        game->controller()->add_resources(2);
                     }
             }
             h->harvest();
-            game->controller_resources() += 2;
+            game->controller()->add_resources(2);
         }
     }
 }
@@ -2319,7 +2455,7 @@ void MapUI::MapHexSelected(Hex *h) {
     }
     else if(get_current_action() == MapAction::BuildWalker) {
         if(h->m_contains_armory == true) {
-            if(game->controller_resources() >= map->m_buying_units * 8) {
+            if(game->controller()->get_resources() >= map->m_buying_units * 8) {
                 map->store_current_state();
                 h->m_units_moved += map->m_buying_units;
                 game->controller_pay(map->m_buying_units * 8);
@@ -2550,6 +2686,7 @@ static void is_won(void) {
 }
 
 static void end_turn_cb(void) {
+    debug("end_turn_cb()");
     Map_UI->m_turn_anim = 1.0;
 
     is_won();
@@ -2561,9 +2698,6 @@ static void end_turn_cb(void) {
     map->free_units();
     map->clear_old_states();
     clear_active_hex();
-
-    sideinfo1->set_offsets();
-    sideinfo2->set_offsets();
 
     msg->add("It's %s's turn", s->m_name);
 
@@ -2662,7 +2796,7 @@ static void build_walker_cb(void) {
         Map_UI->mark(mark);
 
         msg->add("Select hex to recruit on. (max: %d)",
-                 int(floor(float(game->controller_resources()) / 8.0)));
+                 int(floor(float(game->controller()->get_resources()) / 8.0)));
         Map_UI->set_current_action(MapAction::BuildWalker);
     } else {
         msg->add("Insufficient resources (min: 8)");
