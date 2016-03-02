@@ -2557,6 +2557,7 @@ static void end_turn_cb(void) {
     SideController *s = game->get_next_controller();
 
     map->harvest();
+    s->add_resources(4);
     map->free_units();
     map->clear_old_states();
     clear_active_hex();
