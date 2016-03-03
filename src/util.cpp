@@ -8,8 +8,10 @@
 using namespace std;
 
 #include "./util.h"
+#include "./config.h"
 
 static fstream logstream;
+extern Config cfg;
 
 void init_logging(void) {
     //if(config.log_to_file == false)
@@ -84,8 +86,8 @@ void fatal_error(const char *format_string, ...) {
 }
 
 void debug(const char *format_string, ...) {
-    //if(config.debug_output == false)
-    //    return;
+    if(cfg.debug_output == false)
+        return;
     extern bool debug_output;
     if(debug_output == false) { return; }
 
