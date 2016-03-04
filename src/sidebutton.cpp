@@ -31,21 +31,19 @@ void SideButton::draw(void) {
     if(get_current_side() == Side::Blue) {
         c = m_pressed ? colors.blue_muted : colors.blue;
     }
-    if(m_outlined == true) {
-        //al_draw_line(m_x2 - 2, m_y1, m_x2 - 2, m_y2, colors.white, 2);
-        if(m_outline_right == true) {
-            al_draw_filled_rectangle(m_x2, m_y1, m_x2 + 4, m_y2,
-                                     colors.white);
-        } else {
-            al_draw_filled_rectangle(m_x1 - 4, m_y1, m_x1, m_y2,
-                                     colors.white);
+    if(m_outlined == false) {
+        al_draw_filled_rectangle(m_x1, m_y1, m_x2, m_y2, colors.grey_dim);
+        if(m_name != NULL) {
+            al_draw_text(g_font, colors.grey_middle, m_x1 + m_x_off,
+                         m_y1 + m_y_off, 0, m_name);
         }
-    }
+    } else {
 
-    al_draw_filled_rectangle(m_x1, m_y1, m_x2, m_y2, c);
-    if(m_name != NULL) {
-        al_draw_text(g_font, colors.white, m_x1 + m_x_off,
-                     m_y1 + m_y_off, 0, m_name);
+        al_draw_filled_rectangle(m_x1, m_y1, m_x2, m_y2, c);
+        if(m_name != NULL) {
+            al_draw_text(g_font, colors.white, m_x1 + m_x_off,
+                         m_y1 + m_y_off, 0, m_name);
+        }
     }
 }
 

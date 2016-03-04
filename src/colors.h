@@ -17,4 +17,5 @@ struct Colors {
     ALLEGRO_COLOR black;
     ALLEGRO_COLOR white;
     ALLEGRO_COLOR grey_middle;
+    ALLEGRO_COLOR grey_dim;
 };

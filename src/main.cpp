@@ -567,12 +567,11 @@ struct Hex : Widget {
         if(m_level == 0) {
             if(m_a > 5) {
                 m_a -= 0.1 * m_circle_bb_radius;
-                set_redraw();
             }
-
             else {
                 m_level = -1;
             }
+            set_redraw();
         }
     }
 
@@ -1767,7 +1766,6 @@ void HexMap::fire_cannon(Hex *from, Hex *to) {
     from->m_ammo = false;
     to->m_level -= 1;
     to->destroy_units(8);
-    Map_UI->mark(map->pathfind(from, to));
 }
 
 bool HexMap::cannon_in_range(Hex *from, Hex *to) {

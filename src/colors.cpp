@@ -14,4 +14,5 @@ void init_colors(void) {
     colors.black       = al_map_rgb(0, 0, 0);
     colors.white       = al_map_rgb(255, 255, 255);
     colors.grey_middle = al_map_rgb(128, 128, 128);
+    colors.grey_dim    = al_map_rgb(50, 50, 50);
 }
