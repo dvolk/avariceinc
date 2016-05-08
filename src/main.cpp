@@ -1343,7 +1343,7 @@ void MapEditorUI::MapHexSelected(Hex *h) {
     else if(get_current_action() == MapEditorAction::PaintBlue) {
         h->m_side = Side::Blue;
     } else {
-        fatal_error("MapEditorUI::MapHexSelected(): Unknown map editor action");
+        info("MapEditorUI::MapHexSelected(): Unknown map editor action");
     }
 }
 
@@ -2431,7 +2431,10 @@ static void allegro_init() {
     display_x = cfg.display_x;
     display_y = cfg.display_y;
 
-    // try fullscreen windowed mode
+    al_set_new_display_option(ALLEGRO_SAMPLE_BUFFERS, 1, ALLEGRO_SUGGEST);
+    al_set_new_display_option(ALLEGRO_SAMPLES, 16, ALLEGRO_SUGGEST);
+
+  // try fullscreen windowed mode
     if(cfg.fullscreen == true)
         al_set_new_display_flags(ALLEGRO_OPENGL | ALLEGRO_FULLSCREEN_WINDOW);
     else
@@ -3137,6 +3140,7 @@ static void delete_game(void) {
     delete Map_UI;
     delete MapEditor_UI;
     delete game;
+    game = NULL;
     Map_UI = NULL;
 }
 
@@ -3159,12 +3163,14 @@ static void clear_active_hex(void) {
 
 static void pressEsc(void) {
     if(ui == MainMenu_UI) {
+      if(game) {
         if(game->m_type == GameType::Game) {
-            switch_ui(Map_UI);
+	  switch_ui(Map_UI);
         }
         if(game->m_type == GameType::Editor) {
-            switch_ui(MapEditor_UI);
+	  switch_ui(MapEditor_UI);
         }
+      }
     }
     else if(ui == Map_UI or ui == GameSetup_UI or ui == MapEditor_UI) {
         switch_ui(MainMenu_UI);

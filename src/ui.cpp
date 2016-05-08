@@ -59,7 +59,6 @@ bool UI::is_hit(Widget *widget) {
 }
 
 void UI::mouseDownEvent(void) {
-    debug("%d", mouse_button);
     if(mouse_button == 1) {
         for(auto& widget : widgets) {
             if(widget->m_visible == false)
